@@ -110,7 +110,7 @@ Dilarang ada blocking goroutine pada channel (mis. `<-approvalCh`) saat menunggu
 
 - Saat task butuh approval `immediate` atau `digest`, status terkini dan relasi ke record approval dipersist ke SQLite (`status: awaiting_approval`, delivery mode/approval ID tersimpan), lalu CPU/goroutine/RAM dilepas dan worker kembali ke pool — aman saat restart/crash.
 - Checkpoint, request/snapshot refs, expiry, dan digest membership tetap di SQLite; jangan mempertahankan prompt working set/KV cache per task hanya karena parked. Worktree/artifact persisten untuk resume, bukan RAM. Call in-flight disettle/di-account, tidak dimatikan diam-diam; jangan membawa checkpoint mutable task A sebagai context task B.
-- **Session flush:** sesi provider/thread RAM wajib di-flush dan ditutup saat task parked (`awaiting_approval`, `paused`, `interrupted`, `blocked`) — ringkasan dan checkpoint dipersist ke SQLite, worker dilepas (0 CPU/RAM). Ini sesuai dengan aturan pembersihan sesi dari session_policy (#36, I23).
+- Lifecycle dan flush sesi provider mengikuti [I23 — Session Policy](10-contracts-mvp-roadmap.md#72a1-aturan-dasar-invariants); section ini hanya mengatur mekanisme parking worker.
 - Item digest menunggu tanpa worker, goroutine, lock antrean, atau alokasi resource task aktif. Orchestrator bebas memberi agen yang sama backlog independen yang lolos dependency, permission, budget, dan concurrency guard. Agent logical dapat berganti ke `idle`/task lain; UI memisahkan parked task dari aktivitas agen.
 - Grant tervalidasi menjalankan **Compare-And-Swap (CAS)** SQLite (`status: ready`) per task/approval dan menjadwalkannya ulang. Satu klik batch menghasilkan transisi terpisah per item; satu kegagalan tidak membatalkan grant valid lainnya.
 - `risk_tier: critical` tidak eligible digest: policy menghentikan mutasi/dependency yang terdampak dan meminta `immediate` approval saat itu juga. Tidak ada jalur batch yang dapat melanjutkan aksi critical.
@@ -148,7 +148,7 @@ Orchestrator bertugas:
 
 Catatan:
 
-- Detail routing, scheduling, stop condition, dan fan-out ada di **Section 5A.1, 5A.14, 5A.17, dan 5A.18**.
+- Detail ada di [5A.1 — Orchestrator](02-ai-control-plane.md#5a1-orchestrator), [5A.14 — Fan-Out Limit](02-ai-control-plane.md#5a14-fan-out-limit), [5A.18 — Scheduler](02-ai-control-plane.md#5a18-scheduler), dan [5A.19 — Stop Conditions](02-ai-control-plane.md#5a19-stop-conditions).
 - Hanya Orchestrator yang membuat dan meng-assign task. Agent hanya mengirim `task.delegate_requested` (72A.1, I2).
 - Alur pemeriksaan delegasi (fan-out, depth, dependency, policy, budget) ada di **Section 72A.10**.
 

@@ -167,20 +167,24 @@ Agent berkomunikasi menggunakan event/message.
 
 Contoh:
 
+<!-- event-types -->
 ```text
 task.created
 task.started
 message.sent
-tool.started
-tool.completed
+tool.call_started
+tool.call_completed
 artifact.created
 artifact.updated
 review.requested
 review.completed
 approval.requested
 approval.granted
-agent.status_changed
+agent.started
+agent.stopped
 ```
+
+Nama di atas adalah wire `type` dari [72A.7 — Event Registry](10-contracts-mvp-roadmap.md#72a7-event-registry), bukan alias konseptual.
 
 ---
 

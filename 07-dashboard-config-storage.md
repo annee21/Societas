@@ -143,8 +143,9 @@ Modify API route     Revalidation required
 
 # 36. Workspace Configuration
 
-Contoh:
+Contoh `workspace.yaml` utuh. Nama model di bawah bersifat ilustratif dan harus diganti dengan ID model provider yang tersedia; API key memakai referensi environment, bukan nilai secret literal.
 
+<!-- example:workspace.yaml -->
 ```yaml
 version: "1"
 
@@ -158,22 +159,37 @@ server:
 transport:
   event_bus: "go-channel"
 
+providers:
+  openrouter:
+    api_key: "$OPENROUTER_API_KEY"
+    analytics_management_key: "$OPENROUTER_MGMT_KEY"  # opsional, audit saja
+
+models:
+  router: jev-latest
+  policy: jev-latest
+  summarizer: cheap-model
+  research: medium-model
+  cto: strong-model
+  engineer: strong-model
+  reviewer: medium-model
+  ceo: strong-model
+
 agents:
   ceo:
     role: "CEO"
-    model: "..."
+    model: "strong-model"
     autonomy: 3
     permissions:
       filesystem: read
 
   cto:
     role: "CTO"
-    model: "..."
+    model: "strong-model"
     autonomy: 3
 
   research:
     role: "Research"
-    model: "..."
+    model: "medium-model"
     autonomy: 2
     tools:
       - browser
@@ -181,7 +197,7 @@ agents:
 
   engineer:
     role: "Engineer"
-    model: "..."
+    model: "strong-model"
     autonomy: 2
     prompt_template: "templates/engineer.yaml"   # Base Identity Template (5A.4)
     tools:
@@ -189,11 +205,26 @@ agents:
       - shell
       - git
 
+  reviewer:
+    role: "Reviewer"
+    model: "medium-model"
+    autonomy: 2
+    permissions:
+      filesystem: read
+
+# Capability retry tepercaya (#21, I16)
+tool_capabilities:
+  filesystem.read:
+    idempotent: true
+    operation_key_enforced: false
+  external.mutate:
+    idempotent: false
+    operation_key_enforced: false
+
 # Pengambil keputusan akhir debat/putusan teknis (#30.1, #48)
 escalation_lead: "cto"        # atau "human" -> diserahkan ke dashboard
 
-# Evaluasi risiko dinamis -> risk_tier / risk_tags task (#23.1, 72A.5)
-# Toolchain deklaratif untuk Compiler Gate / Deterministic Toolchain Runner (5A.21)
+# Toolchain deklaratif untuk Compiler Gate / Deterministic Toolchain Runner (5A.22)
 toolchain:
   type: "rust"          # atau node, go, python (polyglot)
   shared_cache_dir: "/tmp/societas-cache/rust-shared"
@@ -211,6 +242,7 @@ toolchain:
       cmd: "cargo nextest run"
       parser: "raw_tail"
 
+# Evaluasi risiko dinamis -> risk_tier / risk_tags task (#23.1, 72A.5)
 risk:
   approval_delivery:
     critical: immediate
@@ -244,24 +276,21 @@ risk:
       - "update dependencies"
       - "cleanup cache"
       - "isolated shell script"
+
+# Session Policy & Prompt Caching (I23)
+session_policy:
+  mode: sticky_until_done
+  max_turns_before_flush: 15
+  enable_prompt_caching: true
 ```
 
-    `approval_delivery` mengatur jalur notifikasi, bukan permission, approval, atau expiry. Jika tidak dikonfigurasi, gunakan `immediate`; konfigurasi invalid ditolak, jangan memakai fallback yang melonggarkan policy. Saat `high_mode: digest`, `digest_interval_seconds` dan `max_items_per_card` wajib finite dan positif. Batas item memecah kartu, bukan auto-grant overflow. Akhir siklus berarti scheduler quiescent tanpa task runnable; task yang parked tidak membuat sistem menunggu hingga terminal. Persist waktu/membership notifikasi untuk restart. Critical selalu immediate dan tidak dapat diturunkan lewat setting; path/intent high tetap tunduk pada klasifikasi critical.
+`providers` mengikuti isolasi key dan accounting di [§32.1](06-permissions-approvals-roles.md#321-provider-usage-accounting-openrouter). `models` memakai pemetaan peran di [5A.8 — Model Router](02-ai-control-plane.md#5a8-model-router). `tool_capabilities` adalah konfigurasi retry tepercaya di [§21](05-artifacts-memory-tools.md#21-tools), bukan klaim dari agen.
 
-# Session Policy & Prompt Caching (5A.4, 72A.5)
-session_policy:
-  mode: sticky_until_done   # Opsi: sticky_until_done | stateless_step (default: sticky_until_done)
-  max_turns_before_flush: 15 # Batas maksimal putaran sebelum paksa ringkas & reset window
-  enable_prompt_caching: true
+`toolchain` menjalankan [5A.22 — Compiler Gate](02-ai-control-plane.md#compiler-gate-sebelum-reviewer-dipanggil). Contoh ini memakai toolchain Rust untuk workspace target; runtime Societas sendiri menggunakan Go. `escalation_lead` memilih agent yang terdaftar atau `human` (#30.1, #48).
 
-`session_policy.mode: sticky_until_done` mempertahankan thread/sesi provider hidup selama task berjalan aktif (`running`) agar agen tidak kehilangan alur pemikiran saat bolak-balik eksekusi tool. Context Manager menyusun hierarki prompt dari statis ke dinamis untuk memaksimalkan Prompt Cache Hit Rate: `System Prompt & Role` → `Tool Schemas` → `PROJECT_MAP.md` → `Recent History` → `Input Baru`. Konsumsi token per turn ditangkap real-time via metrik `cached_input_tokens` di payload response (72A.5 `usage`).
+`approval_delivery` mengatur jalur notifikasi, bukan permission, approval, atau expiry. Jika tidak dikonfigurasi, gunakan `immediate`; konfigurasi invalid ditolak, jangan memakai fallback yang melonggarkan policy. Saat `high_mode: digest`, `digest_interval_seconds` dan `max_items_per_card` wajib finite dan positif. Batas item memecah kartu, bukan auto-grant overflow. Akhir siklus berarti scheduler quiescent tanpa task runnable; task yang parked tidak membuat sistem menunggu hingga terminal. Persist waktu/membership notifikasi untuk restart. Critical selalu immediate dan tidak dapat diturunkan lewat setting; path/intent high tetap tunduk pada klasifikasi critical.
 
-Sesi provider/thread RAM wajib di-flush dan ditutup jika:
-- Task mencapai status terminal (`completed`, `failed`, `cancelled`).
-- Task masuk kondisi parkir atau jeda lama (`awaiting_approval`, `paused`, `interrupted`, `blocked`). Di titik ini, ringkasan dan checkpoint dipersist ke SQLite, worker dilepas (0 CPU/RAM), dan sesi provider ditutup (#40.1).
-- Turn mencapai `max_turns_before_flush`: ringkasan otomatis dibuat via Summarizer, disimpan ke SQLite, lalu sesi di-reset untuk mencegah context rot dan lonjakan biaya O(N²).
-
-`session_policy.mode: stateless_step` tersedia sebagai opsi hemat memori: context dirakit ulang per turn dan sesi langsung ditutup setiap selesai satu panggilan model.
+Aturan `session_policy` (mode, lifecycle, dan flush) hanya didefinisikan di [I23 — Session Policy](10-contracts-mvp-roadmap.md#72a1-aturan-dasar-invariants). Perakitan prompt dijelaskan di [5A.4 — Context Manager](02-ai-control-plane.md#5a4-context-manager), dan mekanisme parking worker di [§40.1](08-runtime-architecture.md#401-task-parking-step-function).
 
 ---
 
@@ -308,7 +337,7 @@ anti-pattern yang ditolak (cognitive_guardrail: true, tag: anti-pattern)
 
 ## 37.3 Pemisahan Tanggung Jawab
 
-- Semantic Retrieval (5A.24) menanyakan Vector DB dan menerima ID referensi artifact/memory.
+- [5A.25 — Semantic Retrieval](02-ai-control-plane.md#5a25-semantic-retrieval) menanyakan Vector DB dan menerima ID referensi artifact/memory.
 - SQLite tidak pernah dipakai untuk pencarian teks mentah atau `LIKE`.
 - Vector DB tidak pernah dipakai untuk relasi data, status, atau ledger — itu tanggung jawab SQLite.
 - ID hasil retrieval Vector DB **wajib di-validasi ulang ke SQLite** sebelum masuk context: yang `superseded` atau `stale` dibuang (#19.6 Memory Curation).

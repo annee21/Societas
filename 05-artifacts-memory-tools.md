@@ -129,7 +129,7 @@ Setiap level memory di atas di-map ke pilar penyimpanan:
 - Task Memory: relasi task -> artifact/memory disimpan di SQLite; ringkasan tidak otomatis di-embed dan tetap melewati admission guard #19.6.
 - Run Memory: append-only di event log SQLite; tidak di-embed (ephemeral).
 
-Retrieval semantik selalu melewati Vector DB dan mengembalikan ID referensi (5A.24) — bukan pencarian teks mentah di SQLite.
+Retrieval semantik selalu melewati Vector DB dan mengembalikan ID referensi ([5A.25 — Semantic Retrieval](02-ai-control-plane.md#5a25-semantic-retrieval)) — bukan pencarian teks mentah di SQLite.
 
 ## 19.6 Memory Curation (Anti Semantic Drift / Zombie Memory)
 

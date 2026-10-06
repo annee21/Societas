@@ -39,6 +39,7 @@ Semua aktivitas penting menghasilkan event.
 
 Contoh:
 
+<!-- event-types -->
 ```text
 workspace.created
 agent.created
@@ -141,59 +142,75 @@ Message/event dikirim sebagai envelope (lihat Section 72A.3).
 
 # 14. Message Categories
 
+Daftar berikut memakai wire `type` dari [72A.7 — Event Registry](10-contracts-mvp-roadmap.md#72a7-event-registry). Kategori bukan registry kedua; nama yang tidak terdaftar ditolak (I9).
+
 ## 14.1 Control
 
+<!-- event-types -->
 ```text
-agent.start
-agent.stop
-agent.pause
-agent.resume
+agent.started
+agent.stopped
 ```
 
-Catatan: `agent.pause`/`agent.resume` adalah kontrol level agen (pause semua pekerjaan agent), berbeda dari kontrol level task `task.paused`/`task.resumed` (#33.3, 72A.6, 72A.7) yang menjeda satu task spesifik.
+Start/stop adalah tindakan kontrol yang menghasilkan event lifecycle di atas. Pause/resume level agen belum memiliki wire `type` di registry; jangan mengirim alias sebagai event. Pause/resume satu task memakai `task.paused`/`task.resumed` (#33.3, 72A.6, 72A.7).
 
 ## 14.2 Task
 
+<!-- event-types -->
 ```text
-task.create
-task.assign
-task.update
-task.pause
-task.resume
-task.complete
-task.fail
+task.delegate_requested
+task.created
+task.assigned
+task.started
+task.blocked
+task.paused
+task.resumed
+task.completed
+task.failed
+task.cancelled
 ```
 
 ## 14.3 Communication
 
+<!-- event-types -->
 ```text
-agent.message
-agent.broadcast
-agent.reply
+message.sent
+message.received
 ```
+
+Broadcast/reply adalah pola komunikasi memakai envelope dan target yang sesuai, bukan wire `type` terpisah.
 
 ## 14.4 Tool
 
+<!-- event-types -->
 ```text
-tool.request
-tool.result
-tool.error
+tool.call_requested
+tool.call_started
+tool.call_completed
+tool.call_failed
 ```
+
+Hasil gagal logis memakai `tool.call_completed` dengan `status: error`; kegagalan dispatch/transport memakai `tool.call_failed` sesuai outcome di 72A.8–72A.10.
 
 ## 14.5 Artifact
 
+<!-- event-types -->
 ```text
 artifact.created
 artifact.updated
-artifact.deleted
 ```
+
+Penghapusan artifact belum memiliki wire `type` di registry.
 
 ## 14.6 Approval
 
+<!-- event-types -->
 ```text
-approval.request
+approval.requested
 approval.granted
 approval.rejected
+approval.invalidated
+approval.batch_submitted
 ```
 
 ---

@@ -40,7 +40,7 @@ Aturan ini ditegakkan oleh runtime, bukan oleh prompt agent.
 | I20 | Compiler Gate & Local Toolchain menggunakan **log inactivity timeout** (5 menit tanpa output baru pada `stdout`/`stderr`) untuk mendeteksi deadlock/infinite loop, bukan hard execution timeout durasi total, karena performa kompilasi bervariasi drastis per hardware. Kegagalan build/lint dibatasi maksimal 3 iterasi perbaikan; setelah itu task dibekukan (`status: blocked`) dan dieskalasi ke `escalation_lead` atau manusia. | Tool Runtime + Orchestrator |
 | I21 | Penanganan jaringan terputus menggunakan pendekatan **murni deterministik di Go Runtime** (0 token). Tolak fallback router offline berbasis ONNX/regex. Deteksi jaringan sepenuhnya tugas Go Runtime melalui healthcheck deterministik cepat (socket ping/HEAD request ke DNS publik). Jika internet terkonfirmasi putus, Go Runtime memicu auto-pause via CAS pada SQLite, menyimpan checkpoint dan deadline, lalu melepaskan worker pool. Background daemon memantau pemulihan koneksi dan menerbitkan `task.resumed` saat online kembali tanpa duplikasi event. | Go Runtime + Orchestrator |
 | I22 | Anti-pattern memory disimpan di Vector DB dengan metadata `cognitive_guardrail: true` dan tag `anti-pattern` (keputusan yang ditolak tidak dibuang). Context Manager wajib mengisolasi memori secara struktural menggunakan blok XML saat merakit prompt LLM: rekomendasi positif di `<historical_success>` dan batasan negatif di `<confirmed_blacklist>` di bagian paling bawah. Struktur ini mengunci mekanisme atensi model agar memperlakukan batasan negatif sebagai penalti/filter validasi akhir, bukan contoh untuk ditiru. | Context Manager + Memory Curator |
-| I23 | Session policy dikonfigurasi di `workspace.yaml` (#36) dengan opsi `sticky_until_done` (default) atau `stateless_step`. Mode sticky mempertahankan thread/sesi provider hidup selama task `running` untuk menghindari kehilangan alur pemikiran, dengan hierarki prompt dari statis ke dinamis untuk memaksimalkan Prompt Cache Hit Rate. Sesi wajib di-flush saat task terminal, parked, atau mencapai `max_turns_before_flush` (ringkasan otomatis via Summarizer). Mode stateless hemat memori: context dirakit ulang per turn dan sesi ditutup setiap panggilan. | Context Manager + Orchestrator |
+| I23 | **Sumber utama Session Policy.** Konfigurasi di `workspace.yaml` (#36) memakai `sticky_until_done` (default) atau `stateless_step`. Mode sticky mempertahankan thread/sesi provider selama task `running`. Hierarki prompt statis ke dinamis: `System Prompt & Role` → `Tool Schemas` → `PROJECT_MAP.md` → `Recent History` → `Input Baru`; usage cache diukur lewat `cached_input_tokens` (72A.5). Sesi wajib di-flush dan ditutup saat task terminal (`completed`, `failed`, `cancelled`) atau parked (`awaiting_approval`, `paused`, `interrupted`, `blocked`): ringkasan/checkpoint dipersist ke SQLite dan worker dilepas (#40.1). Saat mencapai `max_turns_before_flush`, Summarizer menyimpan ringkasan ke SQLite lalu sesi di-reset untuk mencegah context rot dan biaya O(N²). Mode stateless merakit ulang context per turn dan menutup sesi setiap selesai satu panggilan model. | Context Manager + Orchestrator |
 
 ## 72A.2 Identifier & Addressing
 
@@ -153,7 +153,7 @@ Label tampilan bukan nilai wire: `thinking` → tier `strong`; Flash tier adalah
 
 ### Budget
 
-Batas yang boleh diberikan ke workspace, run, task, atau agent. Semua field opsional. Field yang tidak ada berarti "ikut batas parent". Mengacu ke 5A.2, 5A.13, 5A.14, dan 5A.19. Batas koreksi lokal pada Compiler Gate (maksimal 3 iterasi, I20) juga mengikuti prinsip retry budget.
+Batas yang boleh diberikan ke workspace, run, task, atau agent. Semua field opsional. Field yang tidak ada berarti "ikut batas parent". Mengacu ke 5A.2, 5A.13, 5A.14, dan [5A.20 — Maximum Iterations](02-ai-control-plane.md#5a20-maximum-iterations). Batas koreksi lokal pada Compiler Gate (maksimal 3 iterasi, I20) juga mengikuti prinsip retry budget.
 
 <!-- schema:budget -->
 ```json
@@ -195,7 +195,7 @@ Aturan pemakaian budget:
 
 - **Reserve lalu settle.** Sebelum model call, Budget Manager me-reserve batas atas (token dan biaya). Setelah selesai, usage nyata di-settle dan sisa reservasi dikembalikan.
 - Budget bersifat hierarkis (5A.3): `workspace > run > task > agent > tool`.
-- Peringatan dikirim saat 80% terpakai (`budget.warning`). Saat limit tercapai: `budget.exceeded`, lalu stop atau approval (5A.20).
+- Peringatan dikirim saat 80% terpakai (`budget.warning`). Saat limit tercapai: `budget.exceeded`, lalu stop atau approval ([5A.21 — Approval Escalation](02-ai-control-plane.md#5a21-approval-escalation)).
 
 ### Usage
 
@@ -1132,7 +1132,7 @@ Tiga outcome kegagalan tool, dan konsekuensinya (I16):
 
 ### Approval
 
-Memperluas #23 dan 5A.20. Pilihan human dipetakan ke `scope`:
+Memperluas #23 dan [5A.21 — Approval Escalation](02-ai-control-plane.md#5a21-approval-escalation). Pilihan human dipetakan ke `scope`:
 
 | Pilihan di UI | `decision` | `scope` |
 |---------------|-----------|---------|
@@ -1603,7 +1603,7 @@ Menggabungkan kategori di #44 dengan kode di 5A.15. Satu kode punya satu kategor
 | `INVALID_OUTPUT` | `INVALID_OUTPUT` | ya | Agent correction, maksimal 2 kali (I10). |
 | `TOOL_INPUT_INVALID` | `INVALID_OUTPUT` | ya | Agent correction dengan pesan error dari tool schema. |
 | `TOOL_FAILED` | `TOOL_ERROR` | tergantung tool | Retry mengikuti outcome dan capability I16; gagal logis yang diketahui bukan alasan mengulang mutasi secara buta. |
-| `TOOL_TIMEOUT` | `TIMEOUT` | tergantung tool | `outcome_unknown` — retry hanya jika tool `idempotent` atau `operation_key` ditegakkan provider (I16); jika tidak, rekonsiliasi atau keputusan human. Untuk compiler/test di Local Toolchain (5A.21, 60.2), timeout menggunakan **log inactivity monitoring** (5 menit tanpa output baru) karena performa kompilasi bervariasi drastis per hardware; bukan hard execution timeout durasi total. |
+| `TOOL_TIMEOUT` | `TIMEOUT` | tergantung tool | `outcome_unknown` — retry hanya jika tool `idempotent` atau `operation_key` ditegakkan provider (I16); jika tidak, rekonsiliasi atau keputusan human. Untuk compiler/test di Local Toolchain ([5A.22 — Compiler Gate](02-ai-control-plane.md#compiler-gate-sebelum-reviewer-dipanggil), 60.2), timeout menggunakan **log inactivity monitoring** (5 menit tanpa output baru) karena performa kompilasi bervariasi drastis per hardware; bukan hard execution timeout durasi total. |
 | `NETWORK_ERROR` | `NETWORK_ERROR` | tergantung operasi | Pada tool: `outcome_unknown` kecuali ada bukti belum dispatch; I16 wajib. Pada model call: ikuti guard dan accounting I4, bukan asumsi call gratis. |
 | `SEARCH_BLOCK_NOT_FOUND` | `TOOL_ERROR` | tidak | Bukan retry runtime — error dikembalikan ke agent; agent wajib membaca ulang file asli sebelum mengirim blok baru (#60.3). |
 | `SEARCH_BLOCK_AMBIGUOUS` | `TOOL_ERROR` | tidak | Blok `SEARCH` cocok di lebih dari satu lokasi — perubahan **tidak diterapkan**; agent harus memperlebar konteks blok (#60.3). |
@@ -1700,7 +1700,7 @@ Urutan di bawah ini adalah kontrak perilaku. Urutan event harus sesuai.
 
 Receipt skipped tidak memuat grant; duplicate key dengan payload berbeda ditolak, bukan di-rebind. Kegagalan persistence tidak menghasilkan jawaban sukses. Recovery yang melintasi SQLite/Event Store terpisah mengikuti W06; langkah ini tidak mengklaim transaksi lintas database.
 
-### Review (Local Compiler Gate, 5A.21)
+### Review (Local Compiler Gate, [5A.22](02-ai-control-plane.md#compiler-gate-sebelum-reviewer-dipanggil))
 
 ```text
 1. Engineer selesai -> artifact.created (patch/code)
@@ -1762,7 +1762,7 @@ Referensi primitive: [git-update-ref](https://git-scm.com/docs/git-update-ref). 
 4. Isi artifact hanya diambil jika benar-benar diperlukan
 ```
 
-### Approval karena budget (5A.20)
+### Approval karena budget ([5A.21 — Approval Escalation](02-ai-control-plane.md#5a21-approval-escalation))
 
 ```text
 1. budget.exceeded
@@ -1774,7 +1774,7 @@ Referensi primitive: [git-update-ref](https://git-scm.com/docs/git-update-ref). 
 
 ## 72A.11 Walkthrough End-to-End
 
-Skenario dari 5A.22. User meminta: *"CEO, evaluasi apakah kita perlu menambahkan fitur baru."*
+Skenario dari [5A.23 — Example Token-Efficient Workflow](02-ai-control-plane.md#5a23-example-token-efficient-workflow). User meminta: *"CEO, evaluasi apakah kita perlu menambahkan fitur baru."*
 
 Urutan event (ringkas):
 
@@ -2203,7 +2203,7 @@ Payload lengkap untuk langkah-langkah penting:
 }
 ```
 
-**Contoh eskalasi budget** (5A.20, I14)
+**Contoh eskalasi budget** ([5A.21 — Approval Escalation](02-ai-control-plane.md#5a21-approval-escalation), I14)
 
 <!-- example:budget.exceeded -->
 ```json

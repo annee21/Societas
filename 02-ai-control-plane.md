@@ -162,12 +162,14 @@ Context dibangun dalam 3 lapisan:
          aturan peran, authority clause (#48.4)
 2. Runtime Context
       -> task aktif, batasan path sandbox, 1–2 potongan
-         memori relevan dari ChromaDB (5A.24)
+         memori relevan dari ChromaDB (5A.25)
 3. Model Adapter
       -> suffix instruksi per tipe model:
          model murah  = aturan output JSON ketat
          model thinking = instruksi evaluasi arsitektur mendalam
 ```
+
+Retrieval memory mengikuti [5A.25 — Semantic Retrieval](02-ai-control-plane.md#5a25-semantic-retrieval).
 
 ### Pencegahan Negation Bleed (Isolasi Struktural XML)
 
@@ -199,7 +201,7 @@ Struktur ini mengunci mekanisme atensi model agar:
 
 ### Prompt Caching Optimization (Session Policy)
 
-Saat `session_policy.mode: sticky_until_done` (default), Context Manager menyusun hierarki prompt dari statis ke dinamis untuk memaksimalkan Prompt Cache Hit Rate provider:
+Aturan mode, lifecycle sesi, dan flush hanya didefinisikan di [I23 — Session Policy](10-contracts-mvp-roadmap.md#72a1-aturan-dasar-invariants). Context Manager menerapkan hierarki prompt statis ke dinamis berikut:
 
 ```text
 1. System Prompt & Role (statis per agent) → cache hit rate tinggi
@@ -209,14 +211,7 @@ Saat `session_policy.mode: sticky_until_done` (default), Context Manager menyusu
 5. Input Baru (dinamis per turn) → cache miss (selalu direfresh)
 ```
 
-Konsumsi token per turn ditangkap secara real-time via metrik `cached_input_tokens` di payload response (72A.5 `usage`). Sesi provider/thread RAM dipertahankan hidup selama task berjalan aktif (`running`) agar agen tidak kehilangan alur pemikiran saat bolak-balik eksekusi tool.
-
-Sesi wajib di-flush dan ditutup jika:
-- Task mencapai status terminal (`completed`, `failed`, `cancelled`).
-- Task masuk kondisi parkir atau jeda lama (`awaiting_approval`, `paused`, `interrupted`, `blocked`) — ringkasan dan checkpoint dipersist ke SQLite, worker dilepas (#40.1).
-- Turn mencapai `max_turns_before_flush` (konfigurasi workspace #36) — ringkasan otomatis dibuat via Summarizer, disimpan ke SQLite, lalu sesi di-reset untuk mencegah context rot dan lonjakan biaya O(N²).
-
-Mode `stateless_step` tersedia sebagai opsi hemat memori: context dirakit ulang per turn dan sesi langsung ditutup setiap selesai satu panggilan model.
+Pengukuran cache memakai `cached_input_tokens` pada [72A.5 — Usage](10-contracts-mvp-roadmap.md#usage); contoh konfigurasi ada di [§36](07-dashboard-config-storage.md#36-workspace-configuration).
 
 Agent tidak menerima seluruh workspace.
 
@@ -234,9 +229,9 @@ System Prompt
 
 Context harus dibangun berdasarkan relevansi dan budget.
 
-Contoh:
+Contoh pseudocode (notasi Python, bukan implementasi backend Go):
 
-```python
+```text
 build_context(
     agent,
     task,
@@ -329,7 +324,7 @@ Model Router menentukan model yang digunakan oleh suatu task.
 
 Jangan memakai model paling mahal untuk semua pekerjaan.
 
-**Jev AI** digunakan sebagai router utama — ia menerima task context dan menjawab pertanyaan Choice: *"Tier model mana yang dibutuhkan?"* dengan latensi ~150ms dan biaya hampir nol ($0.042/juta token input, output gratis).
+**Jev AI** digunakan sebagai router utama — ia menerima task context dan menjawab pertanyaan Choice: *"Tier model mana yang dibutuhkan?"*. Harga tidak di-hardcode di spesifikasi; biaya aktual dicatat oleh Cost Tracker (5A.10) dari usage provider.
 
 ```text
 Jev (cheap)
@@ -486,7 +481,7 @@ Jangan menggunakan unlimited retry.
 
 Untuk tool, timeout/network error tidak membuktikan side effect belum terjadi. Orchestrator memeriksa `outcome` dan capability tepercaya (#21) sebelum retry: `outcome_unknown` hanya aman untuk retry otomatis bila idempotent atau provider menegakkan `operation_key` stabil sejak dispatch pertama. Tanpa itu, wajib rekonsiliasi/keputusan human (72A.1 I16, 72A.8–10), walaupun retry budget masih tersedia.
 
-**Batas koreksi lokal (Compiler Gate):** kegagalan build/lint pada Deterministic Toolchain Runner (5A.21) dibatasi maksimal **3 kali iterasi perbaikan**. Jika setelah 3 kali percobaan berturut-turut masih gagal/timeout (termasuk log inactivity timeout), Orchestrator membekukan task (`status: blocked`) dan mengeskalasikannya ke `escalation_lead` atau manusia.
+**Batas koreksi lokal (Compiler Gate):** kegagalan build/lint pada Deterministic Toolchain Runner ([5A.22 — Compiler Gate](02-ai-control-plane.md#compiler-gate-sebelum-reviewer-dipanggil)) dibatasi maksimal **3 kali iterasi perbaikan**. Jika setelah 3 kali percobaan berturut-turut masih gagal/timeout (termasuk log inactivity timeout), Orchestrator membekukan task (`status: blocked`) dan mengeskalasikannya ke `escalation_lead` atau manusia.
 
 ## 5A.14 Fan-Out Limit
 

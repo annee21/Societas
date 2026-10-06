@@ -215,7 +215,7 @@ Engineer dapat:
 
 Engineer tidak otomatis boleh melakukan deployment production.
 
-Output kode Engineer selalu melewati **Deterministic Toolchain Runner** (pipeline build/lint/test lokal, 0 token, fail-fast) sebelum diserahkan ke Reviewer (lihat 5A.21, #29, `toolchain` di #36).
+Output kode Engineer selalu melewati **Deterministic Toolchain Runner** (pipeline build/lint/test lokal, 0 token, fail-fast) sebelum diserahkan ke Reviewer (lihat [5A.22 — Compiler Gate](02-ai-control-plane.md#compiler-gate-sebelum-reviewer-dipanggil), #29, `toolchain` di #36).
 
 Mekanisme penulisan kode ke worktree memakai **Search & Replace Block** (#60.3) — Engineer tidak menulis ulang seluruh file dan tidak mengarang header unified diff. Serial Merge Queue (#60.4) melakukan rebase/resolve → freeze candidate → deterministic gate → Semantic Rebase → Reviewer → approval. Snapshot mengikat commit/tree/base, gate/semantic/review evidence dan recipe; perubahan input membatalkan approval/evidence (I17/I19, 72A.8/72A.10). Textual conflict kembali ke Engineer; semantic conflict/inconclusive diparkir untuk `escalation_lead` (#48.5) dan refactor asinkron, bukan langsung merge.
 
@@ -251,7 +251,7 @@ BLOCKED
 
 Label tampilan yang ekuivalen dipetakan ke wire `review.completed.verdict` (72A.8): `PASS` → `approve`, `PASS_WITH_WARNINGS` → `approve` dengan temuan advisory nonblocking, `REQUEST_CHANGES` → `request_changes`. `reject` adalah penolakan final hasil review, bukan state task `blocked`. Label legacy `BLOCKED` tidak boleh otomatis diubah menjadi `reject` atau mengubah state task; maknanya masih menunggu keputusan I01 (penolakan final vs menunggu dependency/policy). Adapter wajib menghasilkan verdict kanonik yang eksplisit sebelum hasil review diproses.
 
-Reviewer LLM **hanya dipanggil setelah Local Compiler Gate lolos** (5A.21): backend Go menjalankan build/linter lokal terlebih dahulu dengan biaya 0 token; kegagalan sintaks dikembalikan langsung ke Engineer tanpa memanggil Reviewer.
+Reviewer LLM **hanya dipanggil setelah Local Compiler Gate lolos** ([5A.22 — Compiler Gate](02-ai-control-plane.md#compiler-gate-sebelum-reviewer-dipanggil)): backend Go menjalankan build/linter lokal terlebih dahulu dengan biaya 0 token; kegagalan sintaks dikembalikan langsung ke Engineer tanpa memanggil Reviewer.
 
 ---
 

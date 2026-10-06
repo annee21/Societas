@@ -12,6 +12,7 @@ import re
 import subprocess
 import sys
 from typing import Any, Iterator
+from urllib.parse import unquote
 
 from jsonschema import Draft202012Validator, FormatChecker
 from jsonschema.exceptions import SchemaError
@@ -25,10 +26,104 @@ FENCE = re.compile(r"^```(json|yaml)\s*\n(.*?)^```\s*$", re.M | re.S)
 TAG = re.compile(r"<!-- (schema|schemas|example|fixture):([\w.]+) -->\s*$")
 ROW = re.compile(r"^\| `([\w.]+)` \| `(\w+)` \|", re.M)
 NUMBER = re.compile(r"^#{1,6} (\d+[A-Z]?(?:\.\d+)*)\.? ", re.M)
+SECTION_REF = re.compile(r"(?<![\w.])(?:5A|72A)\.\d+(?:\.\d+)*(?![\w.])")
+LINK = re.compile(r"\[([^\]]+)\]\(([^\s)]+)\)")
 TASK_EVENTS = {
     "task.paused", "task.resumed", "task.interrupted",
     "task.rebase_conflict", "task.semantic_conflict", "task.contract_changed",
 }
+
+
+def markdown_parts(text: str, filename: str, check: Any) -> tuple[str, list[tuple[str, str, int, str]]]:
+    """Keep line numbers while excluding fenced code from prose/heading checks."""
+    lines = text.splitlines(keepends=True)
+    prose = list(lines)
+    blocks: list[tuple[str, str, int, str]] = []
+    marker = ""
+    language = tag = ""
+    start = 0
+    for index, line in enumerate(lines):
+        fence = re.match(r"^ {0,3}(`{3,}|~{3,})(.*)$", line.rstrip())
+        if marker:
+            prose[index] = "\n"
+            if (fence and fence[1][0] == marker[0] and len(fence[1]) >= len(marker)
+                    and not fence[2].strip()):
+                blocks.append((language, "".join(lines[start + 1:index]), start + 1, tag))
+                marker = ""
+        elif fence:
+            marker, language = fence[1], fence[2].strip()
+            start = index
+            tag = lines[index - 1].strip() if index else ""
+            prose[index] = "\n"
+    check(f"fences_closed:{filename}", not marker, f"unclosed fence at line {start + 1}" if marker else "")
+    return re.sub(r"<!--.*?-->", lambda match: "\n" * match[0].count("\n"), "".join(prose), flags=re.S), blocks
+
+
+def heading_index(prose: str) -> dict[str, str]:
+    """GitHub-style anchors mapped to their owning numbered section."""
+    anchors: dict[str, str] = {}
+    duplicates: Counter = Counter()
+    stack: list[tuple[int, str]] = []
+    for match in re.finditer(r"^(#{1,6}) +(.+?)\s*#*\s*$", prose, re.M):
+        depth, title = len(match[1]), match[2]
+        title = LINK.sub(r"\1", title)
+        title = re.sub(r"<[^>]*>", "", title)
+        number = re.match(r"(\d+[A-Z]?(?:\.\d+)*)\.?(?:\s|$)", title)
+        while stack and stack[-1][0] >= depth:
+            stack.pop()
+        owner = number[1] if number else (stack[-1][1] if stack else "")
+        stack.append((depth, owner))
+        slug = re.sub(r"[^\w\- ]", "", title.lower()).replace(" ", "-")
+        anchor = slug
+        while anchor in anchors:
+            duplicates[slug] += 1
+            anchor = f"{slug}-{duplicates[slug]}"
+        anchors[anchor] = owner
+    return anchors
+
+
+def documentation_checks(texts: dict[str, str], mapping: dict[str, str], check: Any) -> None:
+    parts = {name: markdown_parts(text, name, check) for name, text in texts.items()}
+    headings = {name: heading_index(prose) for name, (prose, _) in parts.items()}
+    sections = {number for anchors in headings.values() for number in anchors.values() if number}
+    for filename, (prose, blocks) in sorted(parts.items()):
+        for number in sorted(set(SECTION_REF.findall(prose))):
+            check(f"section_reference:{filename}:{number}", number in sections, number)
+        for match in LINK.finditer(prose):
+            label, target = match.groups()
+            if not (target.startswith("#") or re.match(r"(?:\./)?[^:#]+\.md(?:#|$)", target)):
+                continue
+            destination, _, anchor = target.partition("#")
+            destination = destination.removeprefix("./") or filename
+            location = f"{filename}:{prose[:match.start()].count(chr(10)) + 1}"
+            check(f"document_link:{location}:{target}", destination in texts, target)
+            if destination not in texts or not anchor:
+                continue
+            anchor = unquote(anchor)
+            check(f"document_anchor:{location}:{target}", anchor in headings[destination], target)
+            if anchor not in headings[destination]:
+                continue
+            numbers = re.findall(r"(?<![\w.])((?:5A|72A)\.\d+(?:\.\d+)*|[§#]\d+(?:\.\d+)*)", label)
+            for number in numbers:
+                number = number.lstrip("§#")
+                owner = headings[destination][anchor]
+                check(f"link_section:{location}:{number}", number == owner,
+                      {"label": number, "target_section": owner, "target": target})
+        for language, body, line, tag in blocks:
+            if tag == "<!-- event-types -->":
+                check(f"event_list_format:{filename}:{line}", language == "text")
+                for event_type in filter(None, map(str.strip, body.splitlines())):
+                    check(f"document_event:{filename}:{line}:{event_type}", event_type in mapping, event_type)
+            if tag == "<!-- example:workspace.yaml -->":
+                required = {"version", "workspace", "server", "transport", "providers", "models",
+                            "agents", "tool_capabilities", "escalation_lead", "toolchain", "risk", "session_policy"}
+                try:
+                    config = yaml.safe_load(body)
+                    present = set(config) if isinstance(config, dict) else set()
+                    check(f"workspace_example:{filename}:{line}", language == "yaml" and required <= present,
+                          {"missing": sorted(required - present)})
+                except yaml.YAMLError as error:
+                    check(f"workspace_example:{filename}:{line}", False, str(error))
 
 
 def objects(value: Any) -> Iterator[dict[str, Any]]:
@@ -400,6 +495,7 @@ def audit(root: Path, baseline_ref: str | None) -> dict[str, Any]:
     mapping = dict(rows)
     check("registry_types_unique", len(mapping) == len(rows))
     check("registry_rows_not_lost", len(mapping) >= 42, len(mapping))
+    documentation_checks(texts, mapping, check)
     for event_type, schema_name in mapping.items():
         check(f"registry:{event_type}", PREFIX + schema_name in schemas)
     reachable = {PREFIX + "envelope"} | {PREFIX + name for name in mapping.values()}
@@ -509,7 +605,9 @@ def audit(root: Path, baseline_ref: str | None) -> dict[str, Any]:
         "checks": checks,
         "limitations": [
             "Original review audit assets were not supplied; counts/probes may differ.",
-            "YAML syntax only; no workspace config schema was supplied.",
+            "YAML syntax and tagged workspace example completeness only; no config schema was supplied.",
+            "Prose 5A/72A reference existence, local Markdown links/anchors and numbered link labels checked; "
+            "bare reference intent is not inferred. Only tagged event-type lists are checked against the registry.",
             "Reference boundary probes are not runtime integration tests.",
             "Approval fixture predicates/document-order checks do not execute rebase, gates, "
             "review, Git-ref CAS, scope consumption, or live resource-version checks.",

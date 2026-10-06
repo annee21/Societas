@@ -13,14 +13,15 @@ SPEC.loader.exec_module(AUDIT)
 
 
 class AuditTests(unittest.TestCase):
-    def run_fixture(self, before: str = "", after: str = "") -> dict:
+    def run_fixture(self, before: str = "", after: str = "", filename: str = "10-contracts-mvp-roadmap.md") -> dict:
         with tempfile.TemporaryDirectory(prefix="societas-audit-test-") as directory:
             root = Path(directory)
-            canonical = (ROOT / "10-contracts-mvp-roadmap.md").read_text(encoding="utf-8")
-            if before:
-                self.assertIn(before, canonical)
-                canonical = canonical.replace(before, after, 1)
-            (root / "10-contracts-mvp-roadmap.md").write_text(canonical, encoding="utf-8")
+            for path in ROOT.glob("*.md"):
+                text = path.read_text(encoding="utf-8")
+                if before and path.name == filename:
+                    self.assertIn(before, text)
+                    text = text.replace(before, after, 1)
+                (root / path.name).write_text(text, encoding="utf-8")
             return AUDIT.audit(root, None)
 
     def assert_failed(self, report: dict, prefix: str) -> None:
@@ -148,6 +149,88 @@ class AuditTests(unittest.TestCase):
             '"policy_hash", "inputs"],',
         )
         self.assert_failed(report, "probe:snapshot_approval_budget_missing_contract_hash")
+
+    def test_shifted_number_with_valid_anchor_is_detected(self) -> None:
+        report = self.run_fixture(
+            "[5A.22 — Compiler Gate]", "[5A.21 — Compiler Gate]",
+            "06-permissions-approvals-roles.md",
+        )
+        self.assert_failed(report, "link_section:")
+
+    def test_wrong_but_existing_anchor_is_detected(self) -> None:
+        report = self.run_fixture(
+            "#5a18-scheduler", "#5a17-network-failure-handling-deterministic-go-runtime",
+            "08-runtime-architecture.md",
+        )
+        self.assert_failed(report, "link_section:")
+
+    def test_nonexistent_section_is_detected(self) -> None:
+        report = self.run_fixture("5A.1–5A.28", "5A.1–5A.99", "README.md")
+        self.assert_failed(report, "section_reference:")
+
+    def test_missing_document_is_detected(self) -> None:
+        report = self.run_fixture(
+            "02-ai-control-plane.md#5a25-semantic-retrieval",
+            "missing.md#5a25-semantic-retrieval", "05-artifacts-memory-tools.md",
+        )
+        self.assert_failed(report, "document_link:")
+
+    def test_missing_anchor_is_detected(self) -> None:
+        report = self.run_fixture(
+            "#5a25-semantic-retrieval", "#missing-heading", "05-artifacts-memory-tools.md",
+        )
+        self.assert_failed(report, "document_anchor:")
+
+    def test_legacy_event_names_are_detected(self) -> None:
+        for filename, before, after in (
+            ("01-vision-and-core.md", "tool.call_started", "tool.started"),
+            ("01-vision-and-core.md", "agent.started", "agent.status_changed"),
+            ("04-communication-and-events.md", "agent.started", "agent.start"),
+            ("04-communication-and-events.md", "task.created", "task.create"),
+            ("04-communication-and-events.md", "tool.call_requested", "tool.request"),
+            ("04-communication-and-events.md", "approval.requested", "approval.request"),
+        ):
+            with self.subTest(event=after):
+                self.assert_failed(self.run_fixture(before, after, filename), "document_event:")
+
+    def test_workspace_fence_ending_early_is_detected(self) -> None:
+        report = self.run_fixture(
+            "# Session Policy & Prompt Caching (I23)",
+            "```\n\n# Session Policy & Prompt Caching (I23)",
+            "07-dashboard-config-storage.md",
+        )
+        self.assert_failed(report, "workspace_example:")
+
+    def test_unclosed_fences_are_detected(self) -> None:
+        for fence in ("```", "~~~~"):
+            with self.subTest(fence=fence):
+                checks = []
+                AUDIT.markdown_parts(
+                    f"# 36. Config\n{fence}yaml\nsession_policy: {{}}\n", "example.md",
+                    lambda *args: checks.append(args),
+                )
+                self.assertEqual(checks[0][0], "fences_closed:example.md")
+                self.assertFalse(checks[0][1])
+
+    def test_incomplete_workspace_example_is_detected(self) -> None:
+        for field in ("providers", "models", "tool_capabilities", "session_policy"):
+            with self.subTest(field=field):
+                report = self.run_fixture(f"\n{field}:\n", f"\nmissing_{field}:\n", "07-dashboard-config-storage.md")
+                self.assert_failed(report, "workspace_example:")
+
+    def test_heading_index_ignores_code_and_preserves_section_ownership(self) -> None:
+        checks = []
+        prose, _ = AUDIT.markdown_parts(
+            "# 5A.22 Cheap Path\n```yaml\n# 5A.99 Not a heading\n```\n"
+            "### Compiler Gate\n### Compiler Gate\n## 5A.23 Next\n### Compiler Gate\n",
+            "example.md", lambda *args: checks.append(args),
+        )
+        anchors = AUDIT.heading_index(prose)
+        self.assertNotIn("5a99-not-a-heading", anchors)
+        self.assertEqual(anchors["compiler-gate"], "5A.22")
+        self.assertEqual(anchors["compiler-gate-1"], "5A.22")
+        self.assertEqual(anchors["compiler-gate-2"], "5A.23")
+        self.assertTrue(checks[0][1])
 
 if __name__ == "__main__":
     unittest.main()
