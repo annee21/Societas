@@ -175,7 +175,7 @@ Payload `task.rebase_conflict` (`conflict_files`, `base_ref`) dan kode `REBASE_C
 - Base/kandidat/PROJECT_MAP/semantic decision refs/recipe/policy/contract/evidence berubah → `approval.invalidated`; ulangi rebase → gate → semantic → review → approval dengan ID baru. Tidak mewariskan approval lama meskipun diff tampak serupa.
 - Integrasi fast-forward tidak membuat merge/squash commit baru setelah approval. Working tree/index gate bersih dan cocok candidate tree; target bukan symbolic ref, full ref/OID divalidasi Git.
 - Setelah expected-base CAS berhasil dan ref hasil direkonsiliasi, persist `merge_receipt` yang mengikat workspace/run/task/repo/ref/base/merged commit/tree, approval snapshot, serta semantic/gate/review evidence refs. Ini receipt provenance operasional; bukan transactional guarantee lintas Git+SQLite, yang tetap keputusan W06.
-- Git-ref CAS tidak menyelesaikan recovery lintas Git+SQLite, sinkronisasi checkout, atau keamanan metadata shared worktree. Keputusan W06/W14 tetap terbuka; jangan memberi agen writable common git-dir untuk memenuhi alur ini.
+- Git-ref CAS tidak menyelesaikan recovery lintas Git+SQLite, sinkronisasi checkout, atau keamanan metadata shared worktree. Recovery lintas Git+SQLite dijelaskan di [DEC-002] W06 (Multi-Store Recovery Protocol) dan shared metadata isolation dijelaskan di [DEC-004] W14 (Shared Git Metadata Isolation). Jangan memberi agen writable common git-dir untuk memenuhi alur ini.
 
 ---
 

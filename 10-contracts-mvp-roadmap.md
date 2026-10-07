@@ -1751,7 +1751,7 @@ git update-ref --no-deref <target_ref> <candidate_commit> <expected_base>
 
 Argumen berasal dari snapshot tervalidasi, bukan command string agen; `repo_id` resolved dari konfigurasi tepercaya. Validasi full ref melalui Git (schema regex bukan pengganti `check-ref-format`), format OID repo, objek commit/tree, ancestry, dan target branch/direct ref. Serialisasi mencakup pemeriksaan final + operasi ref; expected-old Git tetap wajib untuk writer eksternal yang tidak ikut antrean. CAS gagal → tidak merge, `approval.invalidated` `reason: base_changed`, lalu base baru → rebase → gate → review → request baru. Jangan overwrite target atau retry tanpa expected base.
 
-CAS hanya menjamin atomisitas **Git ref**, bukan transaksi lintas Git + SQLite atau konsistensi checkout/index. Executor wajib menjaga target checkout/materialisasi konsisten tanpa memperluas writable shared metadata; model isolasinya tetap keputusan W14. Bila response update hilang/crash sesudah dispatch, ikuti I16: rekonsiliasi ref dengan durable intent/receipt sebelum retry/rebase; ref yang sudah maju mungkin efek aksi sendiri, bukan alasan mengulang merge. Recovery intent/receipt + state/event/outbox lintas subsistem dijelaskan di [DEC-002] W06 (Multi-Store Recovery Protocol). Sesudah merge, task terminal tidak dibuka kembali; bila pekerjaan integration dipisahkan dari task output yang sudah terminal, gunakan task nonterminal terpisah sesuai keputusan semantik completed yang masih terbuka.
+CAS hanya menjamin atomisitas **Git ref**, bukan transaksi lintas Git + SQLite atau konsistensi checkout/index. Executor wajib menjaga target checkout/materialisasi konsisten tanpa memperluas writable shared metadata. Model isolasi shared Git metadata dijelaskan di [DEC-004] W14 (Shared Git Metadata Isolation). Bila response update hilang/crash sesudah dispatch, ikuti I16: rekonsiliasi ref dengan durable intent/receipt sebelum retry/rebase; ref yang sudah maju mungkin efek aksi sendiri, bukan alasan mengulang merge. Recovery intent/receipt + state/event/outbox lintas subsistem dijelaskan di [DEC-002] W06 (Multi-Store Recovery Protocol). Sesudah merge, task terminal tidak dibuka kembali; bila pekerjaan integration dipisahkan dari task output yang sudah terminal, gunakan task nonterminal terpisah sesuai keputusan semantik completed yang masih terbuka.
 
 Referensi primitive: [git-update-ref](https://git-scm.com/docs/git-update-ref). Referensi encoding: [RFC 8785](https://www.rfc-editor.org/rfc/rfc8785).
 
@@ -3107,6 +3107,90 @@ ON CONFLICT(idempotency_key) DO NOTHING;
 | SQLite WAL corruption | `PRAGMA integrity_check` fails | Fallback to recovery mode, alert human |
 | Missing approval snapshot | `bound_hash` tidak match artifact | Mark intent `aborted`, emit `approval.invalidated` |
 | Outbox dispatcher lag | Event committed tapi not delivered | Background job retry, no action on intent |
+
+---
+
+# 72A.15 [DEC-004] W14 — Shared Git Metadata Isolation
+
+## Context & Problem Statement
+
+- **Ticket ID**: [DEC-004] W14
+- **References**: Doc 10 §72A.11 Merge Queue, Doc 09 §59.1 OS Isolation, [SEC-002]
+- **Problem**: Jika agent memiliki akses langsung ke shared Git metadata (`.git/common`), agent berpotensi merusak *refs*, mengeksekusi arbitrary code via `.git/hooks`, atau mengubah `.git/config` (pager/editor exploit) yang berdampak ke seluruh worktree workspace.
+- **Required Deliverable**: Model isolasi terpilih (Git Broker Architecture), Threat Model, dan dokumentasi integrasi OS-Level Sandbox (Bubblewrap / Landlock / Container).
+
+## Selected Architecture: Hybrid Git Broker + Local Object Store
+
+Sistem menerapkan **Git Broker Pattern** yang dikombinasikan dengan **Alternate Object Store Jailing**:
+
+### Host Side (Go Runtime Daemon / Git Broker)
+
+- Memegang kontrol penuh atas root repository `.git/`.
+- Mengelola eksekusi administrasi Git: `git worktree add`, `git worktree remove`, `git update-ref`, dan `git rebase`.
+- Menjalankan `Policy Engine` untuk memvalidasi setiap perintah Git sebelum dieksekusi.
+
+### Sandbox Side (Worker Sandbox)
+
+- Di-jail secara ketat di dalam path `.worktrees/TASK-XXX/`.
+- Tidak dapat melihat atau membaca `.git/common` induk secara langsung.
+- **Environment Variables Wajib di Sandbox**:
+  ```bash
+  GIT_DIR=.worktrees/TASK-XXX/.git
+  GIT_OBJECT_DIRECTORY=.worktrees/TASK-XXX/.git/objects
+  GIT_ALTERNATE_OBJECT_DIRECTORIES=/workspace/.git/objects (Read-Only)
+  ```
+- Agen hanya dapat melakukan mutasi pada *working tree* miliknya dan menulis object commit baru ke `.git/objects` lokal miliknya.
+
+## Threat Model & Mitigation Matrix
+
+| Attack Vector | Vulnerability / Impact | Mitigation Strategy |
+| :--- | :--- | :--- |
+| **1. Hook Execution Exploit** | Agent menulis script jahat ke `.git/hooks/pre-commit` atau `.git/hooks/post-checkout` untuk RCE di host. | **Core Git Config Lock**: Git Broker memaksa `core.hooksPath = /dev/null` di dalam sandbox config dan melarang eksekusi hooks. |
+| **2. Global Config Tampering** | Agent mengubah `core.pager = "malicious_script"` atau `core.editor` di `.git/config`. | Agent dilarang menyentuh `.git/config` utama. Konfig `.git/config` induk berstatus Read-Only di luar sandbox. |
+| **3. Cross-Worktree Ref Tampering** | Agent mencoba merusak ref branch main/agent lain (`git update-ref refs/heads/main <hash>`). | Mutasi *Git Ref* **hanya boleh** melalui Git Broker dengan validasi CAS (`expected_base`). Executable CLI git di sandbox tidak punya izin akses ke `.git/refs/heads/main`. |
+| **4. Symlink Escape / Path Traversal** | Agent membuat symlink di worktree yang mengarah ke `/etc/passwd` atau `.git/common`. | **Path Jailing (Doc 06 §22.2)** & OS-level sandbox secara ketat menolak symlink traversal yang keluar dari direktori root task worktree. |
+
+## OS-Level Sandbox Implementation Impact (SEC-002)
+
+Setiap Runner Toolchain (Go Daemon) wajib mengonfigurasi mount point sandbox sesuai teknologi isolasi OS yang aktif:
+
+### A. Linux Bubblewrap (bwrap) Configuration
+
+```bash
+bwrap \
+  --ro-bind /usr /usr \
+  --ro-bind /lib /lib \
+  --ro-bind /lib64 /lib64 \
+  --ro-bind /workspace/.git/objects /workspace/.git/objects \  # Read-Only Alternate Objects
+  --bind /workspace/.worktrees/TASK-101 /workspace/.worktrees/TASK-101 \ # Read-Write Task Worktree
+  --dir /tmp \
+  --proc /proc \
+  --dev /dev \
+  --chdir /workspace/.worktrees/TASK-101 \
+  --unshare-all \
+  --die-with-parent \
+  -- /bin/bash -c "cargo check"
+```
+
+### B. Linux Landlock LSM Rules
+
+- **READ_FILE / READ_DIR**: Diizinkan pada `/workspace/.git/objects` dan direktori dependensi shared cache (`/tmp/societas-cache`).
+- **WRITE_FILE / MAKE_REG / REMOVE_FILE**: Hanya diizinkan pada direktori spesifik `/workspace/.worktrees/TASK-XXX/`.
+- **EXEC / ACCESS**: Dibatasi hanya untuk binary allowlist (`go`, `git`, `cargo`, `npm`, `make`).
+
+### C. Docker / Podman Ephemeral Container
+
+- **Volume Mount**:
+  - `-v /workspace/.git/objects:/workspace/.git/objects:ro` (Read-Only)
+  - `-v /workspace/.worktrees/TASK-101:/workspace/.worktrees/TASK-101:rw` (Read-Write)
+- **Access Control**: `--cap-drop=ALL --security-opt=no-new-privileges:true`.
+
+## Definition of Done (DoD)
+
+- [ ] Opsi Git Broker + Alternate Object Store dipilih dan didokumentasikan.
+- [ ] Aturan isolasi mount Bubblewrap / Landlock untuk `.git/objects` (RO) dan `.worktrees/TASK-XXX` (RW) terimplementasi.
+- [ ] Integrasi `Policy Engine` untuk mencegat mutasi Git Ref di luar worktree scope selesai.
+- [ ] Pengujian symlink escape & hook execution exploit dipastikan `FAIL-CLOSED` (terblokir 100%).
 
 ---
 
