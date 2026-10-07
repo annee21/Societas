@@ -3446,6 +3446,118 @@ Saat human memberikan persetujuan penambahan budget (`approval.granted` dengan `
 
 ---
 
+# 72A.18 [DEC-005] W15 — MVP Baseline, Event Bus DAG & Non-Git Memory Admission
+
+## Context & Problem Statement
+
+- **Ticket ID**: [DEC-005] W15
+- **References**: Doc 10 §81, §103, Doc 09 #60.1/#60.4, Doc 05 #19.6
+- **Problem**:
+  1. Kontradiksi cakupan MVP: Git disebut "opsional" di acceptance §81, tetapi worktree/merge queue diwajibkan untuk Engineer (#60.1/#60.4).
+  2. Urutan pembuatan modul di §103 tidak logis (Event Bus di #21 padahal messaging & delegation di #15/#16 membutuhkan Event Bus).
+  3. Aturan penerimaan memori non-Git (dokumen riset, decision.md, human approval) ke Vector DB belum ditetapkan.
+- **Required Deliverables**:
+  1. Kebijakan final dependensi Git per tipe workspace.
+  2. Dependency Graph (DAG) urutan pengembangan §103 yang telah direvisi.
+  3. Protokol penerimaan memori non-Git (Non-Git Memory Admission Rules).
+
+## MVP Baseline Scope: Git Policy
+
+```text
+                             +-----------------------+
+                             |   Workspace Creation  |
+                             +-----------------------+
+                                         |
+                       +-----------------+-----------------+
+                       |                                   |
+           [Developer Workspace]               [Non-Developer Workspace]
+           (Engineer, Reviewer, Code)          (Research, Strategy, Content)
+                       |                                   |
+                       v                                   v
+             Git MANDATORY                        Git OPTIONAL
+  - Git Worktree per Task (.worktrees/)  - Path Jailing (/workspace/artifacts/)
+  - Serial Merge Queue & Rebase          - Direct File System Artifacts
+  - Search & Replace Code Edits          - No Git Repo Initialized Required
+```
+
+**Pembaruan Teks §81 (MVP Acceptance)**:
+`Tools: filesystem (wajib), restricted shell (wajib), git (wajib untuk Developer Workspace / Engineer Agent; opsional untuk Non-Developer Workspace).`
+
+## Revised Immediate Development Order (§103 Dependency DAG)
+
+Urutan pengembangan sistem diubah menjadi alur Directed Acyclic Graph (DAG) yang menghapus circular dependency:
+
+**[Phase 1: Schemas & Storage]**
+1. Workspace & Config Schema
+2. Agent Schema & Task Model
+3. Event Model & Registry (72A.7)
+4. Contracts & Envelope Validation (Section 72A)
+5. SQLite Storage (Event Store & Operational Store)
+
+**[Phase 2: Event Transport & Control Plane Core]**
+6. Transactional Outbox & Event Bus (Go Channels - Moved Up)
+7. LLM Provider Abstraction & Model Router (Jev)
+8. Budget Manager & Token Guard
+9. Policy Engine & Context Manager
+
+**[Phase 3: Agent Runtime & Messaging]**
+10. Agent Runtime (Step Function & Parking)
+11. Agent Messaging (Envelope + Event Bus)
+12. Orchestrator & Task Engine
+
+**[Phase 4: Collaboration & Safety]**
+13. CEO Delegation & Artifact System
+14. Tool Runtime (MCP Client) & Path Jailing Sandbox
+15. Approval System (Bound Hash & Digest Mode)
+
+**[Phase 5: Agent Roles & Developer Pipeline]**
+16. Research Agent
+17. Git Worktree Isolation (#60.1)
+18. Engineer Agent (Search & Replace + Compiler Gate)
+19. Reviewer Agent
+20. Memory Curation (Vector DB & Admission Guards)
+
+**[Phase 6: UI & Observability]**
+21. Web Dashboard & Live Event Stream
+
+## Non-Git Memory Admission Protocol (Vector DB Curation)
+
+Dokumen non-Git (seperti `research.md`, `decision.md` arbitrase CTO/CEO, dan human approval grants) di-embed ke Cognitive Store (Vector DB) menggunakan aturan berikut:
+
+### A. Immutable Provenance Fingerprint
+
+Setiap memori non-Git wajib diikat ke metadata `ArtifactRef` di SQLite:
+- `provenance_id`: `art_ULID`
+- `version`: integer
+- `checksum`: `sha256:JCS(content)`
+- `source_kind`: `"non_git"`
+
+### B. Proof of Validity Check (Persyaratan Pintu Masuk)
+
+Sebelum Go Runtime memasukkan embedding ke Vector DB, dokumen wajib memenuhi minimal salah satu bukti validitas di SQLite:
+- **Human Approval Grant**: Memiliki record `approval_id` terikat dengan status `granted` dan `bound_hash` yang cocok.
+- **Arbitration Technical Verdict**: Diterbitkan oleh `escalation_lead` resmi (misal: CTO `decision.md` dengan skema `semantic-arbitration/1`).
+- **Completed Task Output**: Dihasilkan oleh task berstatus `completed` dengan `result_status == 'success'` yang telah di-sign off oleh Orchestrator.
+
+### C. Vector Storage Metadata & Anti-Pattern Tagging
+
+Setiap vektor memori non-Git disimpan dengan tag metadata:
+- `cognitive_guardrail: true` (jika merupakan proposal yang ditolak atau anti-pattern, untuk disuntikkan ke blok XML `<confirmed_blacklist>`).
+- `tag`: `"best_practice"` | `"anti_pattern"` | `"research_finding"`.
+
+### D. Tombstone & Supersede Validation
+
+Saat retrieval semantik mengembalikan ID memori non-Git dari Vector DB, Go Runtime wajib mengecek status di SQLite:
+- Jika `superseded_by IS NOT NULL` atau `staleness == 'stale'`, entri tersebut langsung dibuang dan tidak dimasukkan ke dalam prompt LLM (mencegah zombie memory).
+
+## Definition of Done (DoD)
+
+- [ ] Aturan Git wajib (Developer Workspace) vs opsional (Non-Developer Workspace) didokumentasikan di §81.
+- [ ] Urutan pengembangan di §103 diperbarui mengikuti DAG 21 langkah.
+- [ ] Protokol Non-Git Memory Admission terimplementasi di fungsi `AdmitMemoryToVectorDB()` Go Runtime.
+
+---
+
 # 79. MVP
 
 MVP harus kecil.
@@ -3584,7 +3696,7 @@ MVP dianggap selesai jika:
 
 - minimal filesystem
 - shell terbatas
-- git opsional (**baseline belum dikunci**: bertentangan dengan workflow wajib #60.1/#60.4; keputusan W15 diperlukan sebelum implementasi MVP Engineer)
+- git (wajib untuk Developer Workspace/Engineer Agent; opsional untuk Non-Developer Workspace; lihat [DEC-005] W15)
 
 ### Artifacts
 
@@ -4178,40 +4290,52 @@ Keep the human in control.
 
 # 103. Immediate Development Order
 
-Urutan pertama yang direkomendasikan (urutan Event Bus terhadap delegation/messaging masih menunggu keputusan W15; jangan memperlakukan daftar ini sebagai urutan dependency yang sudah final):
+Urutan pengembangan sistem (DAG yang telah direvisi untuk menghapus circular dependency; lihat [DEC-005] W15):
 
 ```text
+[Phase 1: Schemas & Storage]
 1. Workspace
 2. Agent schema
-3. Agent runtime
-4. LLM provider abstraction
-5. Task model
-6. Event model
-7. Contracts (schema + validator, Section 72A)
-8. SQLite storage
-9. Orchestrator
-10. Budget Manager
-11. Context Manager
-12. Model Router
-13. Cost Tracker
-14. Policy Engine
+3. Task model
+4. Event model
+5. Contracts (schema + validator, Section 72A)
+6. SQLite storage
+
+[Phase 2: Event Transport & Control Plane Core]
+7. Transactional Outbox & Event Bus (Go channel)
+8. LLM provider abstraction
+9. Budget Manager
+10. Context Manager
+11. Model Router
+12. Cost Tracker
+13. Policy Engine
+
+[Phase 3: Agent Runtime & Messaging]
+14. Agent runtime
 15. Agent messaging
-16. CEO delegation
-17. Artifact system
-18. Tool runtime
-19. Permission system
-20. Approval system
-21. Event Bus (Go channel)
-22. Streaming
-23. Reconnect / heartbeat
-24. Dashboard
-25. Research agent
-26. Engineer agent
-27. Reviewer agent
-28. Memory
-29. Usage optimization
-30. Voice / multimodal
-31. Distributed agents
+16. Orchestrator
+
+[Phase 4: Collaboration & Safety]
+17. CEO delegation
+18. Artifact system
+19. Tool runtime
+20. Permission system
+21. Approval system
+
+[Phase 5: Agent Roles & Developer Pipeline]
+22. Research agent
+23. Git worktree isolation
+24. Engineer agent
+25. Reviewer agent
+26. Memory (non-Git admission protocol)
+27. Usage optimization
+
+[Phase 6: UI & Observability]
+28. Streaming
+29. Reconnect / heartbeat
+30. Dashboard
+31. Voice / multimodal
+32. Distributed agents
 ```
 
 ---
