@@ -1153,7 +1153,7 @@ Digest adalah artifact `kind: approval_batch`, content tervalidasi schema `appro
 
 **Approve All Validated** mengirim `approval.batch_submitted` dengan hash dan versi manifest yang ditampilkan. Backend memvalidasi artifact/hash/JCS/schema, workspace/run dan principal sebelum memproses item; manifest hilang, tampered, duplikat, atau foreign ditolak sebagai satu command tanpa grant. Setiap item kemudian dicek sendiri: request tersimpan, ID/hash/snapshot_ref/task cocok; `risk: high`, `delivery_mode: digest`, policy masih high/digest, status pending; expiry, task nonterminal/current, live input, policy, contract, dan evidence masih cocok. Item invalid/expired/stale/already-granted atau berubah menjadi critical dilewati (binding berubah memicu invalidation), bukan auto-approved atau fallback ke immediate. Item valid menghasilkan `approval.granted` normal dengan ID/hash aslinya, `scope: once`, `granted_by: human:user`, dan causation ke command batch. CAS `awaiting_approval → ready` dan dispatch tetap per item; hasil parsial menampilkan status/alasan setiap item.
 
-Replay/double-click memakai I7, binding ID/hash, dan receipt durable per item; pemrosesan ulang tidak boleh memberi grant atau mengeksekusi aksi dua kali. Tidak ada merge lock yang ditahan selama digest/grant. Dua merge yang disetujui dalam satu digest tetap bersaing pada expected-base CAS; kandidat kedua yang stale harus mengulang gate/review/approval. Interval/akhir siklus hanya pemicu digest, bukan perpanjangan expiry atau approval implisit. Receipt pemrosesan tahan-crash lintas event/SQLite masih bagian keputusan recovery W06, bukan klaim sudah terimplementasi.
+Replay/double-click memakai I7, binding ID/hash, dan receipt durable per item; pemrosesan ulang tidak boleh memberi grant atau mengeksekusi aksi dua kali. Tidak ada merge lock yang ditahan selama digest/grant. Dua merge yang disetujui dalam satu digest tetap bersaing pada expected-base CAS; kandidat kedua yang stale harus mengulang gate/review/approval. Interval/akhir siklus hanya pemicu digest, bukan perpanjangan expiry atau approval implisit. Recovery lintas Git + SQLite + Event Store dijelaskan di [DEC-002] W06 (Multi-Store Recovery Protocol).
 
 ### Snapshot Input Approval (I17)
 
@@ -1582,7 +1582,7 @@ Snapshot disusun runtime tepercaya, bukan teks keputusan agen. `action` adalah i
 
 **Request/grant binding:** satu `approval_id` mengikat satu snapshot/hash selama hidupnya; ID tidak dapat dipakai ulang untuk snapshot baru. Backend menyimpan binding dalam SQLite sebelum menawarkan pilihan ke human. Grant wajib menggemakan hash request; setelah restart, lookup dilakukan pada ID/hash/artifact version tersimpan, bukan nilai RAM. Pada grant, resume, **dan tepat sebelum dispatch**, runtime membangun ulang input aktual terikat dan membandingkan JCS/digest dengan request serta memeriksa expiry, policy, contract freshness, dan evidence. Mismatch → `approval.invalidated`, tanpa eksekusi; request baru memakai ID baru. Rejection/expiry/invalidation tidak pernah otomatis berubah menjadi approval. `scope` sekali/task/run tidak membebaskan binding ini dan tidak mengotorisasi kandidat baru; predicate reuse/atomic once-consumption lintas aksi tetap keputusan desain terpisah.
 
-**Digest receipts (I18):** idempotency key item adalah tuple unik `(workspace_id, run_id, batch_hash, approval_id)`. Setelah manifest diverifikasi, tiap item berulang-kali boleh direvalidasi, tetapi hasil final tersimpan sekali. Untuk item grant, dalam satu transaksi Operational Store lakukan CAS request `pending → granted`, catat `approval.granted` di outbox dan simpan `approval_batch_item_receipt` berisi ID/hash/manifest refs/outcome/event ID sebelum event dikirim. Item skip juga mendapat receipt dengan reason. Replay command dengan key sama mengembalikan receipt tersimpan tanpa grant atau side effect kedua; manifest hash/ID sama dengan isi berbeda ditolak. Hasil kartu dibentuk dari receipt per item, bukan respons RAM. Ini aturan durable per-item; recovery lintas subsistem/event store yang tidak satu transaksi tetap W06.
+**Digest receipts (I18):** idempotency key item adalah tuple unik `(workspace_id, run_id, batch_hash, approval_id)`. Setelah manifest diverifikasi, tiap item berulang-kali boleh direvalidasi, tetapi hasil final tersimpan sekali. Untuk item grant, dalam satu transaksi Operational Store lakukan CAS request `pending → granted`, catat `approval.granted` di outbox dan simpan `approval_batch_item_receipt` berisi ID/hash/manifest refs/outcome/event ID sebelum event dikirim. Item skip juga mendapat receipt dengan reason. Replay command dengan key sama mengembalikan receipt tersimpan tanpa grant atau side effect kedua; manifest hash/ID sama dengan isi berbeda ditolak. Hasil kartu dibentuk dari receipt per item, bukan respons RAM. Recovery lintas subsistem/event store dijelaskan di [DEC-002] W06 (Multi-Store Recovery Protocol).
 
 ## 72A.9 Error Catalog
 
@@ -1700,7 +1700,7 @@ Urutan di bawah ini adalah kontrak perilaku. Urutan event harus sesuai.
    perlu manifest/hash/klik baru. Dispatch melakukan recheck; merge tetap expected-base CAS.
 ```
 
-Receipt skipped tidak memuat grant; duplicate key dengan payload berbeda ditolak, bukan di-rebind. Kegagalan persistence tidak menghasilkan jawaban sukses. Recovery yang melintasi SQLite/Event Store terpisah mengikuti W06; langkah ini tidak mengklaim transaksi lintas database.
+Receipt skipped tidak memuat grant; duplicate key dengan payload berbeda ditolak, bukan di-rebind. Kegagalan persistence tidak menghasilkan jawaban sukses. Recovery yang melintasi SQLite/Event Store terpisah dijelaskan di [DEC-002] W06 (Multi-Store Recovery Protocol).
 
 ### Review (Local Compiler Gate, [5A.22](02-ai-control-plane.md#compiler-gate-sebelum-reviewer-dipanggil))
 
@@ -1751,7 +1751,7 @@ git update-ref --no-deref <target_ref> <candidate_commit> <expected_base>
 
 Argumen berasal dari snapshot tervalidasi, bukan command string agen; `repo_id` resolved dari konfigurasi tepercaya. Validasi full ref melalui Git (schema regex bukan pengganti `check-ref-format`), format OID repo, objek commit/tree, ancestry, dan target branch/direct ref. Serialisasi mencakup pemeriksaan final + operasi ref; expected-old Git tetap wajib untuk writer eksternal yang tidak ikut antrean. CAS gagal → tidak merge, `approval.invalidated` `reason: base_changed`, lalu base baru → rebase → gate → review → request baru. Jangan overwrite target atau retry tanpa expected base.
 
-CAS hanya menjamin atomisitas **Git ref**, bukan transaksi lintas Git + SQLite atau konsistensi checkout/index. Executor wajib menjaga target checkout/materialisasi konsisten tanpa memperluas writable shared metadata; model isolasinya tetap keputusan W14. Bila response update hilang/crash sesudah dispatch, ikuti I16: rekonsiliasi ref dengan durable intent/receipt sebelum retry/rebase; ref yang sudah maju mungkin efek aksi sendiri, bukan alasan mengulang merge. Recovery intent/receipt + state/event/outbox lintas subsistem masih W06, tidak dianggap solved oleh CAS. Sesudah merge, task terminal tidak dibuka kembali; bila pekerjaan integration dipisahkan dari task output yang sudah terminal, gunakan task nonterminal terpisah sesuai keputusan semantik completed yang masih terbuka.
+CAS hanya menjamin atomisitas **Git ref**, bukan transaksi lintas Git + SQLite atau konsistensi checkout/index. Executor wajib menjaga target checkout/materialisasi konsisten tanpa memperluas writable shared metadata; model isolasinya tetap keputusan W14. Bila response update hilang/crash sesudah dispatch, ikuti I16: rekonsiliasi ref dengan durable intent/receipt sebelum retry/rebase; ref yang sudah maju mungkin efek aksi sendiri, bukan alasan mengulang merge. Recovery intent/receipt + state/event/outbox lintas subsistem dijelaskan di [DEC-002] W06 (Multi-Store Recovery Protocol). Sesudah merge, task terminal tidak dibuka kembali; bila pekerjaan integration dipisahkan dari task output yang sudah terminal, gunakan task nonterminal terpisah sesuai keputusan semantik completed yang masih terbuka.
 
 Referensi primitive: [git-update-ref](https://git-scm.com/docs/git-update-ref). Referensi encoding: [RFC 8785](https://www.rfc-editor.org/rfc/rfc8785).
 
@@ -2835,7 +2835,7 @@ Kontrak dianggap selesai jika:
 - Approval request/grant divalidasi terhadap ID + snapshot artifact version/checksum; `bound_hash` harus sama dengan SHA-256 byte JCS snapshot, bukan raw Git OID
 - `risk: critical` hanya memakai `delivery_mode: immediate`; `digest` hanya menerima high. Manifest digest immutable per workspace/run, JCS/hash/identity tervalidasi, item unik/terurut dan cocok dengan request; grant per item selalu `scope: once`, stale item dilewati, partial result dilaporkan
 - `approval.batch_submitted` duplikat tidak menggandakan grant/aksi; manifest invalid ditolak sebagai satu command dan setiap item di-recheck terhadap risk/policy/expiry/live binding sebelum grant
-- Item receipt memakai unique key `(workspace_id, run_id, batch_hash, approval_id)`; granted/skipped replay mengembalikan receipt yang sama. Transactional grant + outbox + receipt tersimpan sebelum event delivery, tanpa mengklaim recovery lintas subsistem W06 selesai
+- Item receipt memakai unique key `(workspace_id, run_id, batch_hash, approval_id)`; granted/skipped replay mengembalikan receipt yang sama. Transactional grant + outbox + receipt tersimpan sebelum event delivery. Recovery lintas subsistem dijelaskan di [DEC-002] W06 (Multi-Store Recovery Protocol).
 - Tool mutation memakai normalized arguments/resource versions yang sama dengan snapshot; perubahan live input/policy/contract/expiry menginvalidasi ID lama sebelum dispatch
 - Merge approval hanya sesudah rebase + gate pass + Semantic Rebase `PASS` + review approve pada commit/tree/base/recipe/context yang sama; snapshot mengikat gate/semantic/review evidence beserta versi recipe dan keputusan semantik, dan perubahan salah satu input mengulang evidence + approval
 - Semantic `conflict` dan `inconclusive` memblokir task dengan immutable `blocked_evidence` dan dieskalasi ke `escalation_lead`; keputusan/spec baru baru eligible embedding setelah approval + semantic pass + merge receipt yang mengikat refs/version/checksum sama terkonfirmasi
@@ -2844,6 +2844,269 @@ Kontrak dianggap selesai jika:
 - Object nested, agregat beberapa string, dan string UTF-8 multibyte melewati pemeriksaan byte I5 (uji `limit`, `limit + 1`)
 - Digest snapshot sama meski urutan key berbeda; perubahan argumen/base/kandidat/evidence/policy/contract mengubah hash. Grant dengan hash lama, snapshot artifact version/checksum salah, dan evidence kandidat lain ditolak
 - Dua kandidat approved atas base yang sama tidak boleh keduanya diterapkan: expected-base CAS kedua gagal, evidence/approval diulang; expiry/perubahan saat parked dicek lagi sebelum dispatch
+
+---
+
+# 72A.14 [DEC-002] W06 — Multi-Store Recovery Protocol
+
+## Context & Problem Statement
+
+- **Ticket ID**: [DEC-002] W06
+- **References**: Doc 06 §23/§40.2, Doc 08 §40.1/§42.1, Doc 10 §72A.10, [GIT-004] Serial Merge Queue
+- **Problem**: Perintah Git CAS (`git update-ref --no-deref`) hanya atomik pada sistem berkas (ref Git), namun TIDAK berada dalam satu transaksi ACID dengan SQLite Operational Store maupun Event Store Outbox.
+- **Crash Scenario**: Jika daemon/proses mengalami crash di antara eksekusi Git ref update, penulisan `merge_receipt`/`approval_batch_item_receipt`, dan penulisan event Outbox, status subsistem akan menjadi inkonsisten (drift state).
+
+## Database Schema (SQLite)
+
+```sql
+-- Tabel Durable Intent (Write-Ahead Log untuk operasi lintas store)
+CREATE TABLE IF NOT EXISTS durable_intent (
+    intent_id TEXT PRIMARY KEY,
+    task_id TEXT NOT NULL,
+    repo_id TEXT NOT NULL,
+    target_ref TEXT NOT NULL,          -- contoh: 'refs/heads/main'
+    expected_base TEXT NOT NULL,       -- Commit OID sebelum CAS
+    candidate_commit TEXT NOT NULL,    -- Commit OID yang mau di-merge
+    bound_hash TEXT NOT NULL,          -- Cryptographic approval bound hash (I17)
+    intent_status TEXT NOT NULL CHECK (
+        intent_status IN ('pending', 'confirmed', 'aborted', 'stale_conflict')
+    ),
+    merge_receipt_id TEXT,             -- Foreign key ke artifact receipt (nullable)
+    outbox_event_id TEXT,              -- Foreign key ke event outbox (nullable)
+    conflict_detection_reason TEXT,    -- Alasan jika status: stale_conflict
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_durable_intent_status ON durable_intent(intent_status);
+CREATE INDEX IF NOT EXISTS idx_durable_intent_task ON durable_intent(task_id);
+CREATE INDEX IF NOT EXISTS idx_durable_intent_repo_ref ON durable_intent(repo_id, target_ref);
+```
+
+**Constraints & Invariants**:
+- `intent_id` harus unik per operasi (ULID untuk time-ordering dan uniqueness)
+- `bound_hash` harus mengikuti format `sha256:<hex>` sesuai Doc 10 §72A.1 I17
+- `merge_receipt_id` dan `outbox_event_id` hanya diisi setelah operasi selesai
+- Tidak ada row yang dapat diubah dari `confirmed` kembali ke `pending` (one-way state transition)
+
+## Execution Pipeline: 4-Step Durable Intent Protocol
+
+Setiap mutasi ref Git yang memerlukan receipt/approval harus dieksekusi melalui urutan berikut:
+
+### Step 1: Write Intent (SQLite Transaction 1)
+
+1. Buka transaksi SQLite.
+2. Buat record `durable_intent` dengan:
+   - `intent_status = 'pending'`
+   - `bound_hash` dari approval snapshot (Doc 06 §23 & Doc 10 §72A.1 I17)
+   - Semua field required terisi
+3. Commit SQLite Transaction 1.
+4. **Crash Safety**: Jika crash setelah commit, intent tetap ada untuk reconciliation.
+
+### Step 2: Execute Git CAS (Filesystem)
+
+1. Eksekusi perintah deterministik:
+   ```bash
+   git update-ref --no-deref <target_ref> <candidate_commit> <expected_base>
+   ```
+2. Validasi exit code (0 = success, non-zero = failure).
+3. **Crash Safety**: Jika crash di sini, Git ref mungkin sudah terupdate atau belum → butuh reconciliation.
+
+### Step 3: Write Receipt (SQLite Transaction 2)
+
+1. Buka transaksi SQLite baru.
+2. Buat/ambil artifact `merge_receipt` atau `approval_batch_item_receipt` (Doc 10 §72A.5).
+3. Update `durable_intent`:
+   - Set `intent_status = 'confirmed'`
+   - Set `merge_receipt_id` ke artifact ID receipt
+4. Commit SQLite Transaction 2.
+5. **Crash Safety**: Jika crash setelah commit, intent confirmed tapi event belum terpublish → butuh reconciliation.
+
+### Step 4: Publish Event (Transactional Outbox)
+
+1. Buka transaksi SQLite (Event Store, Doc 08 §42.1).
+2. Insert event ke `events` table (outbox pattern):
+   - Type: `git.ref_updated` atau `approval.batch_item_granted`
+   - Payload: berisi `intent_id`, `merge_receipt_id`, dan metadata
+3. Update `durable_intent`:
+   - Set `outbox_event_id` ke event ID yang baru dibuat
+4. Commit SQLite Transaction 3.
+5. Dispatcher membaca dari Event Store dan mengirim ke subscriber via Go channel.
+6. **Crash Safety**: Event tersimpan di SQLite, dispatcher dapat replay setelah restart.
+
+## Startup Reconciliation Sweeper Procedure
+
+Sweeper dijalankan saat daemon boot untuk mendeteksi dan menyelesaikan intent yang tidak selesai karena crash.
+
+### Scan & Categorize
+
+```sql
+-- Semua intent yang masih pending saat boot
+SELECT * FROM durable_intent
+WHERE intent_status = 'pending'
+ORDER BY created_at ASC;
+```
+
+Untuk setiap pending intent, lakukan klasifikasi:
+
+**Category A: Safe to Resume**
+- Git ref masih sama dengan `expected_base`
+- Tidak ada intent lain yang mengincar `target_ref` yang sama dengan status `confirmed`
+- **Action**: Lanjutkan dari Step 2 (Execute Git CAS)
+
+**Category B: Safe to Abort**
+- Git ref sudah berubah TAPI tidak ada record `merge_receipt` yang valid
+- Berarti Git CAS gagal sebelum Step 3
+- **Action**: Set `intent_status = 'aborted'`, log reason di `conflict_detection_reason`
+
+**Category C: Stale Conflict**
+- Git ref sudah berubah DAN ada record `merge_receipt` dengan `target_ref` yang sama
+- Berarti operasi lain berhasil di masa crash
+- **Action**: Set `intent_status = 'stale_conflict'`, log reason
+
+**Category D: Event Missing (Intent Confirmed, Event Not Published)**
+- `intent_status = 'confirmed'` tapi `outbox_event_id IS NULL`
+- Berarti Step 3 berhasil tapi Step 4 belum
+- **Action**: Jalankan Step 4 ulang (idempotent, gunakan `intent_id` sebagai idempotency key)
+
+### Conflict Detection Logic
+
+Untuk mendeteksi apakah base berubah:
+```bash
+git rev-parse <target_ref>  # Output: current commit OID
+```
+
+Bandingkan dengan `expected_base` dari intent:
+- Jika sama → Category A (resume)
+- Jika berbeda → Category B atau C (perlu cek `merge_receipt`)
+
+### Serial Merge Queue Integration
+
+Karena merge ke `main` diserialkan (Doc 08 §45 & Doc 10 §72A.10), sweeper harus:
+1. Process intents satu per satu per `target_ref`
+2. Jika Category A, eksekusi Git CAS dengan lock per-repo
+3. Jika Category C, jangan auto-resolve → buat task baru untuk Engineer untuk rebase/resolve
+
+### Event Emission untuk Reconciliation
+
+Setiap action reconciliation memicu event:
+- `intent.resumed` (Category A → lanjut Step 2)
+- `intent.aborted` (Category B → dihapus)
+- `intent.stale_conflict` (Category C → task baru dibuat)
+- `intent.event_republished` (Category D → Step 4 ulang)
+
+## Crash Injection Test Plan & Assertions
+
+### Test Scenarios
+
+**Test 1: Crash Between Step 1 & Step 2**
+- Setup: Buat intent valid, commit SQLite, kill process sebelum `git update-ref`
+- Expected State after restart:
+  - `durable_intent` dengan status `pending` ada
+  - Git ref masih `expected_base`
+  - Tidak ada `merge_receipt`
+  - Tidak ada event
+- Sweeper Action: Category A → Resume dari Step 2
+- Assertion: Setelah sweeper, intent `confirmed`, receipt ada, event terpublish
+
+**Test 2: Crash Between Step 2 & Step 3**
+- Setup: Eksekusi `git update-ref` success, kill process sebelum write receipt
+- Expected State after restart:
+  - `durable_intent` dengan status `pending` ada
+  - Git ref sudah `candidate_commit`
+  - Tidak ada `merge_receipt`
+  - Tidak ada event
+- Sweeper Action: Git ref sudah berubah tapi tidak ada receipt → Category B
+- Assertion: Intent `aborted`, log reason mencatat "git_ref_changed_without_receipt"
+
+**Test 3: Crash Between Step 3 & Step 4**
+- Setup: Write receipt success, kill process sebelum publish event
+- Expected State after restart:
+  - `durable_intent` dengan status `confirmed` ada
+  - `merge_receipt_id` terisi
+  - `outbox_event_id IS NULL`
+- Sweeper Action: Category D → Republish event
+- Assertion: Event terpublish, `outbox_event_id` terisi, no duplicate event
+
+**Test 4: Concurrent Intent on Same Ref**
+- Setup: Buat 2 intent untuk `target_ref` yang sama, kill process setelah intent 1 confirmed
+- Expected State after restart:
+  - Intent 1: `confirmed`, receipt ada
+  - Intent 2: `pending`, expected_base = base lama
+  - Git ref sudah = candidate_commit intent 1
+- Sweeper Action: Intent 2 → Category C (stale_conflict)
+- Assertion: Intent 2 `stale_conflict`, conflict reason logged, task baru dibuat untuk rebase
+
+**Test 5: Idempotency on Retry**
+- Setup: Step 4 gagal dispatcher, retry dengan `intent_id` sama
+- Expected State:
+  - Event hanya 1 record di Event Store (idempotency key = `intent_id`)
+  - `outbox_event_id` terisi
+- Assertion: Tidak ada duplicate event, subscriber hanya menerima 1 event
+
+### Assertion Checklist
+
+Untuk setiap test, verifikasi:
+- [ ] SQLite integrity: `PRAGMA integrity_check` pass
+- [ ] No orphan records: semua `merge_receipt_id` valid mengarah ke artifact yang ada
+- [ ] No orphan events: semua `outbox_event_id` valid mengarah ke event yang ada
+- [ ] Git consistency: `git rev-parse` cocok dengan state yang diharapkan
+- [ ] Event ordering: sequence number Event Store monoton naik per run (I6)
+- [ ] Bound hash integrity: `bound_hash` di intent cocok dengan approval snapshot (I17)
+
+### Coverage Requirements
+
+- **Line Coverage**: Minimal 90% untuk code path di Execution Pipeline
+- **Branch Coverage**: Semua status transition (`pending` → `confirmed`/`aborted`/`stale_conflict`) tercover
+- **Integration Coverage**: Sweeper + Git executor + Event Store tested end-to-end
+- **Crash Simulation**: Gunakan signal `SIGKILL` untuk hard crash, bukan graceful shutdown
+
+## Implementation Notes
+
+### Transaction Isolation
+
+Gunakan SQLite dengan mode:
+```sql
+PRAGMA journal_mode = WAL;           -- Write-Ahead Logging untuk concurrency
+PRAGMA synchronous = NORMAL;         -- Balance safety vs performance
+PRAGMA foreign_keys = ON;            -- Enforce referential integrity
+```
+
+### Intent ID Generation
+
+Gunakan ULID (Crockford base32) untuk `intent_id`:
+- Time-ordered untuk debugging
+- Collision-resistant tanpa koordinasi distributed
+- Format: `01J9Z3K4M5N6P7Q8R9S0T1V2W3`
+
+### Lock Strategy untuk Serial Merge Queue
+
+Karena merge diserialkan (Doc 08 §45), gunakan advisory lock per `(repo_id, target_ref)`:
+```go
+// Pseudo-code Go
+lockKey := fmt.Sprintf("merge:%s:%s", repoID, targetRef)
+lock := acquireAdvisoryLock(db, lockKey)
+defer releaseAdvisoryLock(db, lockKey)
+```
+
+### Event Outbox Idempotency
+
+Gunakan `intent_id` sebagai idempotency key untuk event:
+```sql
+INSERT INTO events (idempotency_key, type, payload, ...)
+VALUES (?, 'git.ref_updated', ...)
+ON CONFLICT(idempotency_key) DO NOTHING;
+```
+
+## Error Handling & Edge Cases
+
+| Scenario | Detection | Action |
+|----------|-----------|--------|
+| Git lockfile exists | `git update-ref` returns error dengan "lock file exists" | Retry dengan exponential backoff (max 3 attempts) |
+| Corrupt Git repo | `git fsck` detects corruption | Mark intent `aborted`, log reason, alert human |
+| SQLite WAL corruption | `PRAGMA integrity_check` fails | Fallback to recovery mode, alert human |
+| Missing approval snapshot | `bound_hash` tidak match artifact | Mark intent `aborted`, emit `approval.invalidated` |
+| Outbox dispatcher lag | Event committed tapi not delivered | Background job retry, no action on intent |
 
 ---
 
