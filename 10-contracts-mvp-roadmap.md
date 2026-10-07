@@ -289,7 +289,7 @@ Bentuk lengkap task (memperluas #7).
   "additionalProperties": false,
   "required": ["id", "run_id", "parent_task_id", "title", "goal", "owner", "created_by",
                "priority", "status", "depth", "attempt", "expected_output", "budget",
-               "created_at", "updated_at"],
+               "working_directory", "created_at", "updated_at"],
   "properties": {
     "id": { "$ref": "urn:societas:1:common#/$defs/task_id" },
     "run_id": { "$ref": "urn:societas:1:common#/$defs/run_id" },
@@ -324,6 +324,8 @@ Bentuk lengkap task (memperluas #7).
       }
     },
     "artifact_ids": { "type": "array", "items": { "$ref": "urn:societas:1:common#/$defs/art_id" } },
+    "working_directory": { "type": "string", "minLength": 1, "maxLength": 512,
+                          "description": "Path direktori kerja yang di-assign oleh Orchestrator untuk task ini. Agent menyimpan output di path ini secara relative. Pattern: /workspace/artifacts/{run_id}/{task_id}/" },
     "risk_tier": { "enum": ["low", "normal", "high", "critical"], "default": "normal",
              "description": "Tier risiko dari evaluasi dinamis workspace.yaml (#23.1, #36); 'high' yang memerlukan approval masuk delivery batch, sedangkan 'critical' memicu synchronous halt dan kunci mutasi hingga human approval (5A.8)." },
     "risk_tags": { "type": "array", "items": { "type": "string", "maxLength": 64 }, "uniqueItems": true,
@@ -1867,6 +1869,7 @@ Payload lengkap untuk langkah-langkah penting:
         },
         "used": { "input_tokens": 0, "output_tokens": 0, "model_calls": 0, "tool_calls": 0, "estimated_cost_usd": 0 }
       },
+      "working_directory": "/workspace/artifacts/RUN-001/TASK-001",
       "created_at": "2026-10-06T09:00:01Z",
       "updated_at": "2026-10-06T09:00:01Z"
     }
@@ -2014,6 +2017,7 @@ Payload lengkap untuk langkah-langkah penting:
         },
         "used": { "input_tokens": 0, "output_tokens": 0, "model_calls": 0, "tool_calls": 0, "estimated_cost_usd": 0 }
       },
+      "working_directory": "/workspace/artifacts/RUN-001/TASK-002",
       "created_at": "2026-10-06T09:00:10Z",
       "updated_at": "2026-10-06T09:00:10Z"
     }
