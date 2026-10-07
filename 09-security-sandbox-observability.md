@@ -4,7 +4,7 @@
 
 # 57. Security Model
 
-Security menjadi bagian inti walaupun project personal.
+Security menjadi bagian inti.
 
 Minimal:
 

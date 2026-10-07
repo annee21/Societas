@@ -6,7 +6,7 @@
 
 > **Status:** Konsep / Product Blueprint  
 > **Bahasa:** Indonesia  
-> **Target:** Personal-first, open-source, local/self-hosted  
+> **Target:** Open-source  
 > **Core:** Multi-agent AI workspace dengan komunikasi real-time berbasis Event Bus  
 > **Nama sementara:** `societas`
 
@@ -103,25 +103,7 @@ Tujuan akhirnya adalah membuat AI agents terasa seperti **rekan kerja yang dapat
 
 # 3. Prinsip Produk
 
-## 3.1 Personal First
-
-Produk awal dibuat untuk digunakan sendiri.
-
-Tidak perlu menjadikan:
-
-- growth
-- pricing
-- SaaS
-- enterprise sales
-- market share
-
-sebagai requirement utama.
-
-Produk harus berguna walaupun hanya satu user.
-
----
-
-## 3.2 Open Source
+## 3.1 Open Source
 
 Core system harus dapat dijalankan sendiri.
 
@@ -141,27 +123,13 @@ Tidak boleh ada ketergantungan wajib terhadap server cloud milik project.
 
 ---
 
-## 3.3 Local-First
-
-Sebisa mungkin:
-
-- data lokal
-- credential lokal
-- artifacts lokal
-- memory lokal
-- logs lokal
-
-Cloud API boleh dipakai sebagai model provider, tetapi orchestration layer tetap dikontrol user.
-
----
-
-## 3.4 Agent-Oriented
+## 3.2 Agent-Oriented
 
 Unit utama sistem adalah **agent**, bukan chat session.
 
 ---
 
-## 3.5 Event-Driven
+## 3.3 Event-Driven
 
 Agent berkomunikasi menggunakan event/message.
 
@@ -188,7 +156,7 @@ Nama di atas adalah wire `type` dari [72A.7 — Event Registry](10-contracts-mvp
 
 ---
 
-## 3.6 Human-in-the-Loop
+## 3.4 Human-in-the-Loop
 
 AI boleh mengerjakan banyak hal secara autonomous, tetapi tindakan berisiko tinggi harus dapat meminta approval manusia.
 
@@ -203,7 +171,7 @@ Contoh:
 
 ---
 
-## 3.7 Event-Driven Communication
+## 3.5 Event-Driven Communication
 
 Komunikasi internal antar-agent menggunakan Event Bus. Arsitektur tidak terkunci pada satu mekanisme transport.
 

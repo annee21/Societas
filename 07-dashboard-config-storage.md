@@ -331,7 +331,7 @@ koordinat semantik memory eligible yang masih fresh
 anti-pattern yang ditolak (cognitive_guardrail: true, tag: anti-pattern)
 ```
 
-`artifact.created` hanya mencatat persistence, bukan trigger embedding. Approval snapshot + semantic evidence + confirmed merge receipt harus cocok dan freshness/supersede guard lulus sebelum cognitive admission (I19/72A.10). Implementasi: embedded vector DB seperti **ChromaDB** atau **`sqlite-vec`**, agar tetap local-first tanpa server eksternal. Embedding dihasilkan oleh model embedding lokal yang ringan — bukan model chat utama.
+`artifact.created` hanya mencatat persistence, bukan trigger embedding. Approval snapshot + semantic evidence + confirmed merge receipt harus cocok dan freshness/supersede guard lulus sebelum cognitive admission (I19/72A.10). Implementasi: embedded vector DB seperti **ChromaDB** atau **`sqlite-vec`**. Embedding dihasilkan oleh model embedding lokal yang ringan — bukan model chat utama.
 
 **Anti-pattern storage:** keputusan atau proposal arsitektur yang didebat lalu ditolak (misal via `decision.md` hasil arbitrase atau penolakan human) tidak dibuang. Ringkasan kondisi batasannya diekstraksi ke Vector DB dengan metadata `cognitive_guardrail: true` dan tag `anti-pattern`. Anti-pattern ini diisolasi secara struktural di prompt LLM menggunakan blok XML (`<confirmed_blacklist>`) oleh Context Manager (5A.4) agar model memperlakukannya sebagai penalti/filter validasi akhir, bukan contoh untuk ditiru.
 

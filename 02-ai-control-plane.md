@@ -817,7 +817,7 @@ ID hasil retrieval difilter deterministik di Go sebelum masuk context budget: me
 
 ## 5A.26 Token Visibility
 
-Dashboard **tidak melakukan fetch eksternal ke provider secara live** untuk merender grafik biaya — semua angka dibaca dari SQLite sebagai Single Source of Truth (#32.1), sesuai prinsip Local-First.
+Dashboard **tidak melakukan fetch eksternal ke provider secara live** untuk merender grafik biaya — semua angka dibaca dari SQLite sebagai Single Source of Truth (#32.1).
 
 Dashboard harus menunjukkan:
 

@@ -21,7 +21,7 @@ Nomor yang loncat (34–35, 73–78, 84, dan lainnya) sengaja dipertahankan dari
 
 | File | Section | Topik |
 |------|---------|-------|
-| `01-vision-and-core.md` | 1–5 | Visi, prinsip produk, masalah, konsep inti (workspace, agent, role) |
+| `01-vision-and-core.md` | 1–5 | Visi, masalah, konsep inti (workspace, agent, role) |
 | `03-tasks-and-lifecycle.md` | 6–9 | Agent lifecycle, task system, intake & routing pipeline (§7.1), task graph, delegation |
 | `02-ai-control-plane.md` | 5A.1–5A.28 | Control Plane: orchestrator, budget, context, router (Jev), policy, intake pipeline (§7.1 dirujuk dari sini) |
 | `04-communication-and-events.md` | 10–16 | Communication model, event model/bus, message categories, streaming, agent conversation |

@@ -326,7 +326,7 @@ LLM Provider
 
 # 32. Cost / Usage Tracking
 
-Walaupun produk personal-first, usage tracking tetap berguna.
+Usage tracking tetap berguna.
 
 Track:
 
