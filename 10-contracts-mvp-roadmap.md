@@ -3150,6 +3150,23 @@ Sistem menerapkan **Git Broker Pattern** yang dikombinasikan dengan **Alternate 
 | **3. Cross-Worktree Ref Tampering** | Agent mencoba merusak ref branch main/agent lain (`git update-ref refs/heads/main <hash>`). | Mutasi *Git Ref* **hanya boleh** melalui Git Broker dengan validasi CAS (`expected_base`). Executable CLI git di sandbox tidak punya izin akses ke `.git/refs/heads/main`. |
 | **4. Symlink Escape / Path Traversal** | Agent membuat symlink di worktree yang mengarah ke `/etc/passwd` atau `.git/common`. | **Path Jailing (Doc 06 §22.2)** & OS-level sandbox secara ketat menolak symlink traversal yang keluar dari direktori root task worktree. |
 
+## External Security References
+
+Keputusan memilih **Git Broker Pattern (Opsi B)** didukung oleh temuan security terbaru dari industri:
+
+### 1. Pillar Security — The Week of Sandbox Escapes
+
+- **Temuan Vulnerability**: Riset menunjukkan bahwa AI coding agent yang hanya mengisolasi path `.git/` dengan regex path biasa sangat rentan mengalami sandbox escape. Agen dapat memanfaatkan indirection `git init --separate-git-dir=.git-alt`, lalu menyisipkan script executable di `.git-alt/hooks/fsmonitor-watchman`. Ketika IDE/Extension host memindai repository, script tersebut tereksekusi secara otomatis di luar sandbox.
+- **Relevansi ke DEC-004**: Membuktikan bahwa Opsi A (Read-Only Bind Mount langsung ke `.git/common`) memiliki risiko security bypass yang tinggi. Keputusan memilih Git Broker Pattern—yang memblokir total akses write ke `.git` induk dan mengarahkan object store via `GIT_ALTERNATE_OBJECT_DIRECTORIES` (Read-Only)—sudah tepat untuk mencegah attack vector ini.
+
+### 2. Industry Standards for Agent Worktree Isolation
+
+- **Claude Code `--isolate`**: Menggunakan worktree jailing dengan izin read-write dibatasi strictly hanya pada `.worktrees/TASK-XXX/`.
+- **Augment Intent & Sandcastle**: Agent dijalankan di dalam lingkungan ephemeral container atau Linux Bubblewrap (`bwrap`) dengan mount point terisolasi.
+- **GitLab Duo SRT**: Hook disabling dengan menyuntikkan `core.hooksPath = /dev/null` di level environment runtime sandbox.
+
+Pattern ini mengkonfirmasi bahwa pendekatan Git Broker + Alternate Object Store jailing adalah standar industri untuk isolasi AI agent worktree.
+
 ## OS-Level Sandbox Implementation Impact (SEC-002)
 
 Setiap Runner Toolchain (Go Daemon) wajib mengonfigurasi mount point sandbox sesuai teknologi isolasi OS yang aktif:
