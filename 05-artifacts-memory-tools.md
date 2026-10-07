@@ -160,7 +160,7 @@ Anti-pattern ini tetap di-retrieval saat ada konteks serupa, tetapi **diisolasi 
 
 Prinsip: Vector DB adalah **perpustakaan buku yang sudah lulus kurasi** — bukan tempat sampah. Edisi lama ditarik dari rak saat revisi terbit.
 
-Semantic triage mengambil exact-version Git/SQLite/artifact sebagai input; dilarang mengambil proposal dari Vector DB atau memakai similarity untuk menghidupkan zombie memory. Setelah replacement valid admitted, tombstone/supersede menarik versi lama lewat mekanisme existing. Provenance fingerprint/freshness lintas source dan non-Git admission dijelaskan di [DEC-005] W15 (Non-Git Memory Admission Protocol).
+Semantic triage mengambil exact-version Git/SQLite/artifact sebagai input; dilarang mengambil proposal dari Vector DB atau memakai similarity untuk menghidupkan zombie memory. Setelah replacement valid admitted, tombstone/supersede menarik versi lama lewat mekanisme existing. Non-Git admission dijelaskan di [DEC-005] W15. Provenance fingerprint/freshness lintas source dijelaskan di [DEC-006] W11/W12.
 
 ---
 

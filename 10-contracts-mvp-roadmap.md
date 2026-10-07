@@ -3558,6 +3558,123 @@ Saat retrieval semantik mengembalikan ID memori non-Git dari Vector DB, Go Runti
 
 ---
 
+# 72A.19 [DEC-006] W11/W12 — Provenance Fingerprint, Memory Freshness & GC
+
+## Context & Problem Statement
+
+- **Ticket ID**: [DEC-006] W11/W12
+- **References**: Doc 05 §19.6, [CTX-004] Semantic Retrieval Filter & Memory GC
+- **Problem**: Pecahan memori pada Vector DB tidak memiliki tautan terverifikasi ke sumber aslinya (Git commit, SQLite record, atau Artifact ID). Hal ini menyebabkan masalah "Zombie Memory" di mana agen mengambil pengetahuan usang dari commit/file lama yang sudah dihapus atau diubah.
+- **Required Deliverables**:
+  1. Skema Provenance Fingerprint deterministik.
+  2. Aturan Multi-Source Freshness & Time-Decay Scoring.
+  3. Kontrak Memory Garbage Collection (GC) berbasis pemicu Git & Vacuum Sweeper.
+
+## Provenance Fingerprint Schema
+
+Setiap entri memori yang di-embed ke Vector DB wajib membawa payload metadata `provenance` berikut:
+
+```json
+{
+  "provenance_fingerprint": "prov_sha256_e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "source_kind": "git_commit | sqlite_record | artifact | external_url",
+  "source_id": "commit_oid_or_ulid",
+  "git_commit_sha": "40_hex_git_commit_hash",
+  "file_path": "src/core/adapter.go",
+  "content_hash": "sha256_of_raw_chunk_text",
+  "version": 1,
+  "created_at": "2026-10-07T15:20:00Z"
+}
+```
+
+### Formulasi Hash Fingerprint
+
+```
+provenance_fingerprint = "prov_" + SHA256(
+    source_kind + ":" +
+    source_id + ":" +
+    COALESCE(git_commit_sha, "") + ":" +
+    COALESCE(file_path, "") + ":" +
+    content_hash
+)
+```
+
+## Multi-Source Memory Freshness Rules
+
+Saat pipeline pencarian semantik (CTX) berjalan, sistem mengevaluasi Freshness Status dari setiap kandidat memori:
+
+```
+               +--------------------------------------+
+               |   Evaluate Memory Provenance Origin  |
+               +--------------------------------------+
+                                  |
+         +------------------------+------------------------+
+         |                                                 |
+   [Git Source]                                   [Non-Git / Artifact]
+         |                                                 |
+  Check HEAD Commit                                Check SQLite Version
+         |                                                 |
+  +------+------+------+                            +------+------+
+  |             |      |                            |             |
+[Same OID]   [Diff] [Deleted]                 [Current Ver]   [Superseded]
+  |             |      |                            |             |
+  v             v      v                            v             v
+FRESH        STALE  ORPHANED                      FRESH       SUPERSEDED
+(W=1.0)     (W=0.2)  (W=0.0)                     (W=1.0)       (W=0.0)
+```
+
+### Formula Bobot Akhir Context (CTX Retrieval Score)
+
+```
+S_effective = S_semantic × e^(-λ × Δt) × FreshnessMultiplier
+```
+
+Di mana:
+- `S_semantic`: Cosine similarity score dari Vector DB (0.0 – 1.0).
+- `e^(-λ × Δt)`: Half-life time decay factor (default half-life = 14 hari).
+- `FreshnessMultiplier`:
+  - `fresh` = 1.0
+  - `stale` = 0.2 (hanya diambil jika tidak ada kandidat `fresh` yang cocok)
+  - `superseded` = 0.0 (hard filter: dibuang dari prompt)
+  - `orphaned` = 0.0 (hard filter: dibuang dari prompt)
+
+## Memory Garbage Collection (GC) Contract & Sweeper
+
+Proses pembersihan memori (Garbage Collection) berjalan melalui 3 pemicu (triggers):
+
+### A. Trigger 1: Post-Merge & Post-Checkout Git Hook Sweeper
+
+Setiap kali terjadi perubahan HEAD ref Git (misal setelah `git rebase` atau `git merge` di Merge Queue):
+1. Jalankan `git diff-tree --name-status -r old_HEAD new_HEAD`.
+2. Untuk setiap file yang mengalami modifikasi (`M`):
+   - SQLite UPDATE: Set status memori ber-path file tersebut dengan `git_commit_sha != new_HEAD` menjadi `stale`.
+3. Untuk setiap file yang dihapus (`D`):
+   - SQLite UPDATE: Set status memori ber-path file tersebut menjadi `orphaned`.
+
+### B. Trigger 2: Periodic Vacuum Sweeper (Cron Job 1 Jam / Low-Watermark)
+
+Setiap 1 jam sekali, background worker membersihkan entri fisik di Vector DB:
+
+```sql
+-- Query hapus fisik untuk memori mati
+DELETE FROM cognitive_vector_store
+WHERE status IN ('superseded', 'orphaned')
+   OR (status = 'stale' AND created_at < DATETIME('now', '-30 days'));
+```
+
+### C. Trigger 3: Workspace Purge / Reset Cascading GC
+
+Jika sebuah workspace atau run dihapus oleh pengguna:
+- Jalankan cascading hard-delete pada seluruh tabel `budget_ledger`, `durable_intent`, dan entri `cognitive_vector_store` yang memiliki `workspace_id` terkait.
+
+## Definition of Done (DoD)
+
+- [ ] Implementasi fungsi pembangkit `provenance_fingerprint` SHA-256.
+- [ ] Evaluasi Freshness Multiplier (`fresh`, `stale`, `superseded`, `orphaned`) terpasang pada pipeline pencarian semantik CTX.
+- [ ] Handler `PostMergeGCHook()` dan `VacuumSweeper()` lulus pengujian unit test 100%.
+
+---
+
 # 79. MVP
 
 MVP harus kecil.
