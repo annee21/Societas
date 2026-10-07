@@ -86,7 +86,7 @@ Semua pesan memakai satu envelope yang sama. Perbedaan hanya ada pada `type` dan
   "type": "object",
   "additionalProperties": false,
   "required": ["protocol_version", "schema_version", "id", "type", "ts",
-               "workspace_id", "run_id", "correlation_id", "from", "to", "payload"],
+               "workspace_id", "run_id", "correlation_id", "from", "to", "payload", "principal"],
   "properties": {
     "protocol_version": { "const": "societas/1" },
     "schema_version": { "type": "string", "pattern": "^[0-9]+$" },
@@ -104,7 +104,18 @@ Semua pesan memakai satu envelope yang sama. Perbedaan hanya ada pada `type` dan
     "trace_id": { "type": "string", "pattern": "^[0-9a-f]{32}$" },
     "from": { "$ref": "urn:societas:1:common#/$defs/actor" },
     "to": { "$ref": "urn:societas:1:common#/$defs/address" },
-    "payload": { "type": "object" }
+    "payload": { "type": "object" },
+    "principal": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["principal_id", "principal_type", "session_id", "auth_digest"],
+      "properties": {
+        "principal_id": { "type": "string", "pattern": "^(usr_|agt_|sys_)[0-9A-HJKMNP-TV-Z]{26}$" },
+        "principal_type": { "enum": ["human", "agent", "system"] },
+        "session_id": { "type": "string", "pattern": "^ses_[0-9A-HJKMNP-TV-Z]{26}$" },
+        "auth_digest": { "type": "string", "pattern": "^hmac_sha256:[0-9a-f]{64}$" }
+      }
+    }
   }
 }
 ```
@@ -1151,7 +1162,7 @@ Policy Engine menentukan `risk` dan `delivery_mode`; agen tidak dapat memilih ja
 
 Digest adalah artifact `kind: approval_batch`, content tervalidasi schema `approval_batch`, dengan bytes JCS immutable per workspace/run. `batch_hash = "sha256:" + hex_lower(SHA256(JCS(batch)))`; `batch_ref.checksum` wajib sama dengan `batch_hash`. Item diurutkan naik berdasarkan UTF-16 `approval_id`; ID approval duplikat ditolak. `metadata.approval_batch` hanya indeks konten artifact yang sama, bukan sumber otorisasi lain. Summary Manager membentuk kartu dari manifest dan snapshot tersimpan; ringkasan LLM hanya teks penjelas. Item baru/perubahan membership memerlukan artifact, hash, dan klik baru.
 
-**Approve All Validated** mengirim `approval.batch_submitted` dengan hash dan versi manifest yang ditampilkan. Backend memvalidasi artifact/hash/JCS/schema, workspace/run dan principal sebelum memproses item; manifest hilang, tampered, duplikat, atau foreign ditolak sebagai satu command tanpa grant. Setiap item kemudian dicek sendiri: request tersimpan, ID/hash/snapshot_ref/task cocok; `risk: high`, `delivery_mode: digest`, policy masih high/digest, status pending; expiry, task nonterminal/current, live input, policy, contract, dan evidence masih cocok. Item invalid/expired/stale/already-granted atau berubah menjadi critical dilewati (binding berubah memicu invalidation), bukan auto-approved atau fallback ke immediate. Item valid menghasilkan `approval.granted` normal dengan ID/hash aslinya, `scope: once`, `granted_by: human:user`, dan causation ke command batch. CAS `awaiting_approval → ready` dan dispatch tetap per item; hasil parsial menampilkan status/alasan setiap item.
+**Approve All Validated** mengirim `approval.batch_submitted` dengan hash dan versi manifest yang ditampilkan. Backend memvalidasi artifact/hash/JCS/schema, workspace/run dan principal sebelum memproses item; manifest hilang, tampered, duplikat, atau foreign ditolak sebagai satu command tanpa grant. Principal authentication dijelaskan di [DEC-007] (Atomic Once-Consumption Grant & Principal Event Authentication). Setiap item kemudian dicek sendiri: request tersimpan, ID/hash/snapshot_ref/task cocok; `risk: high`, `delivery_mode: digest`, policy masih high/digest, status pending; expiry, task nonterminal/current, live input, policy, contract, dan evidence masih cocok. Item invalid/expired/stale/already-granted atau berubah menjadi critical dilewati (binding berubah memicu invalidation), bukan auto-approved atau fallback ke immediate. Item valid menghasilkan `approval.granted` normal dengan ID/hash aslinya, `scope: once`, `granted_by: human:user`, dan causation ke command batch. CAS `awaiting_approval → ready` dan dispatch tetap per item; hasil parsial menampilkan status/alasan setiap item.
 
 Replay/double-click memakai I7, binding ID/hash, dan receipt durable per item; pemrosesan ulang tidak boleh memberi grant atau mengeksekusi aksi dua kali. Tidak ada merge lock yang ditahan selama digest/grant. Dua merge yang disetujui dalam satu digest tetap bersaing pada expected-base CAS; kandidat kedua yang stale harus mengulang gate/review/approval. Interval/akhir siklus hanya pemicu digest, bukan perpanjangan expiry atau approval implisit. Recovery lintas Git + SQLite + Event Store dijelaskan di [DEC-002] W06 (Multi-Store Recovery Protocol).
 
@@ -2787,7 +2798,7 @@ OID/ID/policy/recipe di fixture ini sintetis, bukan bukti Git runtime. Konten ar
 
 **Boundary pause/resume:** `task_id` wajib pada `task.paused`, `task.resumed`, `task.interrupted`, `task.rebase_conflict`, `task.semantic_conflict`, dan `task.contract_changed`. Untuk pause `requested`, sender harus `human:user`, tujuan `system:orchestrator`, dan `initiated_by` sama dengan sender. Untuk pause `completed`, sender harus `system:orchestrator`, tujuan `topic:all`, dan `initiated_by` menunjuk human peminta yang tersimpan. `task.resumed` hanya diterbitkan `system:orchestrator`, ditujukan ke owner task; `from_status` harus cocok dengan state tersimpan. Pemeriksaan envelope/payload/state bersama ini diperlukan karena payload schema saja tidak memvalidasi sender atau state SQLite.
 
-**Boundary approval:** schema tidak memeriksa hash/artifact/state sendirian. Pada request: envelope workspace/run/task cocok snapshot (task yang tidak berlaku = null), action cocok snapshot, delivery mode/risk diizinkan policy, dan checksum snapshot_ref cocok bound_hash. Pada grant: ID/hash cocok request tersimpan yang masih valid; budget_override, bila ada, persis proposed_limits untuk action budget.increase dan tidak boleh ada pada aksi lain. Pada `approval.batch_submitted`: Event Bus memverifikasi envelope pengirim/tujuan; Orchestrator membaca versi artifact tepat, memvalidasi JCS/hash/schema/checksum, workspace/run, urutan dan keunikan approval ID, lalu mengevaluasi tiap item terhadap request serta policy yang masih berlaku. Command duplikat memakai durable receipt per item. Untuk `git.merge`, semantic evidence harus `pass` pada binding kandidat yang sama saat approval dan final dispatch; `conflict`/`inconclusive` tidak boleh lolos walau artifact lain valid. Pada invalidation: Orchestrator mencatat ID/hash lama yang diikat, bukan hash pengganti. Snapshot/evidence versions, profile, checksum, policy, expiry dan live input dicek ulang sebelum dispatch. Unknown action, lost/tampered snapshot, stale grant atau evidence mismatch menghasilkan `APPROVAL_BINDING_INVALID`; mismatch input terikat menginvalidasi ID lama. General auth principal dan atomisitas consumption tetap keputusan terpisah.
+**Boundary approval:** schema tidak memeriksa hash/artifact/state sendirian. Pada request: envelope workspace/run/task cocok snapshot (task yang tidak berlaku = null), action cocok snapshot, delivery mode/risk diizinkan policy, dan checksum snapshot_ref cocok bound_hash. Pada grant: ID/hash cocok request tersimpan yang masih valid; budget_override, bila ada, persis proposed_limits untuk action budget.increase dan tidak boleh ada pada aksi lain. Pada `approval.batch_submitted`: Event Bus memverifikasi envelope pengirim/tujuan dan principal authentication; Orchestrator membaca versi artifact tepat, memvalidasi JCS/hash/schema/checksum, workspace/run, urutan dan keunikan approval ID, lalu mengevaluasi tiap item terhadap request serta policy yang masih berlaku. Command duplikat memakai durable receipt per item. Untuk `git.merge`, semantic evidence harus `pass` pada binding kandidat yang sama saat approval dan final dispatch; `conflict`/`inconclusive` tidak boleh lolos walau artifact lain valid. Pada invalidation: Orchestrator mencatat ID/hash lama yang diikat, bukan hash pengganti. Snapshot/evidence versions, profile, checksum, policy, expiry dan live input dicek ulang sebelum dispatch. Unknown action, lost/tampered snapshot, stale grant atau evidence mismatch menghasilkan `APPROVAL_BINDING_INVALID`; mismatch input terikat menginvalidasi ID lama. Principal authentication dan atomic once-consumption dijelaskan di [DEC-007] (Atomic Once-Consumption Grant & Principal Event Authentication).
 
 **Versioning:**
 
@@ -3672,6 +3683,101 @@ Jika sebuah workspace atau run dihapus oleh pengguna:
 - [ ] Implementasi fungsi pembangkit `provenance_fingerprint` SHA-256.
 - [ ] Evaluasi Freshness Multiplier (`fresh`, `stale`, `superseded`, `orphaned`) terpasang pada pipeline pencarian semantik CTX.
 - [ ] Handler `PostMergeGCHook()` dan `VacuumSweeper()` lulus pengujian unit test 100%.
+
+---
+
+# 72A.20 [DEC-007] — Atomic Once-Consumption Grant & Principal Event Authentication
+
+## Context & Problem Statement
+
+- **Ticket ID**: [DEC-007]
+- **References**: Doc 10 §72A.8, §72A.12, Doc 08 §40.2, §89
+- **Problem**:
+  1. Belum ada mekanisme atomik di database untuk mencegah `approval grant` ber-scope `once`/`task`/`run` dipakai ulang secara ilegal (replay attack) lintas aksi parallel.
+  2. Autentikasi principal untuk pembuat event (human vs agent) dan agen session (§89) belum ditentukan, sehingga rentan terhadap *event spoofing*.
+- **Required Deliverables**:
+  1. Skema SQLite & Kueri CAS Atomic untuk pemakaian grant sekali pakai.
+  2. Model autentikasi principal pada Event Envelope (`72A.3`) & protokol Agent Session (§89).
+
+## Atomic Once-Consumption Protocol (SQLite CAS)
+
+### A. Database Schema (`approval_grants`)
+
+```sql
+CREATE TABLE IF NOT EXISTS approval_grants (
+    grant_id TEXT PRIMARY KEY,                 -- ULID (grt_01J...)
+    approval_id TEXT NOT NULL,
+    workspace_id TEXT NOT NULL,
+    bound_hash TEXT NOT NULL,                  -- Snapshot state hash (Doc 08 §40.2)
+    grant_scope TEXT NOT NULL CHECK (grant_scope IN ('once', 'task', 'run')),
+    status TEXT NOT NULL CHECK (status IN ('active', 'consumed', 'revoked', 'expired')),
+    bound_task_id TEXT,                        -- Diisi jika scope = 'task'
+    bound_run_id TEXT,                         -- Diisi jika scope = 'run'
+    consumed_at DATETIME,
+    consumed_by_task_id TEXT,
+    expires_at DATETIME NOT NULL,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_grants_cas ON approval_grants(grant_id, status);
+```
+
+### B. Kueri Single-Statement Atomic CAS (Go Executable)
+
+Saat `GIT approval executor` atau tool runtime hendak mengeksekusi aksi berbasis grant:
+
+```sql
+-- Executed inside a SQLite Write-Ahead Log (WAL) transaction
+UPDATE approval_grants
+SET status = 'consumed',
+    consumed_at = CURRENT_TIMESTAMP,
+    consumed_by_task_id = :executing_task_id
+WHERE grant_id = :target_grant_id
+  AND status = 'active'
+  AND (expires_at > CURRENT_TIMESTAMP)
+RETURNING *;
+```
+
+### C. Validation Logic
+
+- `RowsAffected() == 1`: Transaksi sukses, eksekusi aksi diizinkan.
+- `RowsAffected() == 0`: Transaksi gagal. Sistem menolak eksekusi dan menerbitkan event `approval.execution_failed` (Error: `GRANT_ALREADY_CONSUMED` atau `GRANT_EXPIRED`).
+
+## Principal Event Authentication Model (§89)
+
+### A. Extension pada Event Envelope (`72A.3`)
+
+Setiap event wire type yang melewati Event Bus wajib menambahkan struktur `principal`:
+
+```json
+{
+  "event_id": "evt_01J...",
+  "type": "task.completed",
+  "timestamp": "2026-10-07T15:27:00Z",
+  "principal": {
+    "principal_id": "usr_01J... | agt_01J... | sys_broker",
+    "principal_type": "human | agent | system",
+    "session_id": "ses_01J...",
+    "auth_digest": "hmac_sha256(event_id + timestamp + payload_hash, session_secret)"
+  },
+  "payload": {}
+}
+```
+
+### B. Agent Session Handshake Protocol (§89)
+
+**Session Bootstrapping**: Saat Agent Runtime diinisialisasi, agent mengirimkan `agent.session_requested` ke Control Plane.
+
+**Token Issuance**: Control Plane memvalidasi izin role workspace, lalu mengembalikan `session_id` beserta `session_secret` (HMAC key) dengan TTL (default 1 jam).
+
+**Event Verification**: Sebelum Event Bus menyalurkan event ke subscriber, Validator memverifikasi `auth_digest`. Jika signature mismatch, event langsung dibuang (fail-closed) dan dicatat di audit log.
+
+## Definition of Done (DoD)
+
+- [ ] Kueri atomic CAS `UPDATE approval_grants ... RETURNING *` terimplementasi di Go Approval Engine.
+- [ ] Struktur `principal` pada Event Envelope `72A.3` terpasang dan diverifikasi oleh Event Bus.
+- [ ] Agent Session Handshake (§89) teruji dengan penolakan event bersignature palsu/invalid.
+- [ ] Integration test skenario race condition parallel consume lulus 100%.
 
 ---
 
