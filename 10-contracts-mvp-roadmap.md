@@ -1473,7 +1473,7 @@ Snapshot disusun runtime tepercaya, bukan teks keputusan agen. `action` adalah i
 **Input per aksi:**
 - `git.merge`: `repo_id` adalah ID repo konfigurasi tepercaya (bukan path pilihan agen), `target_ref` adalah full local branch ref, `expected_base`/`candidate_commit`/`candidate_tree` adalah full lowercase object ID dengan format repo yang sama. Gate recipe hash mengikat toolchain/config/command yang benar-benar dijalankan. Semantic, gate, dan review masing-masing menunjuk artifact version/checksum yang memiliki `metadata.merge_evidence` valid; binding-nya sama persis dengan workspace/run/task/policy/contract/candidate snapshot. Semantic evidence wajib `kind: semantic_rebase`, `result: pass`, `semantic_recipe_hash`, evaluator tier, findings, serta refs base/candidate masing-masing dengan role + artifact ID/version/checksum yang cocok dengan content artifact. Recipe mengikat evaluator/provider/tier/prompt-schema version, policy, dan exact input refs. Gate wajib `pass`, review wajib `approve`. Evidence ID/versi yang berbeda menghasilkan snapshot/hash berbeda.
 - `tool.execute`: adapter tepercaya menormalisasi argumen (termasuk default dan resource identity) sebelum hash; **argumen hasil normalisasi itulah yang dieksekusi**, tidak dibentuk ulang setelah approval. `resources` memuat seluruh precondition/resource version yang dilindungi aksi; ID harus unik dan diurutkan naik menurut code unit UTF-16 `resource_id` (aturan sort string JCS) sebelum JCS. Tanpa resources, array kosong eksplisit. Adapter menentukan fingerprint/version secara deterministik dan mengecek ulang saat dispatch; tidak boleh menghilangkan resource relevan hanya karena versi sulit diperoleh. Bila precondition tidak bisa dijamin saat mutasi, fail closed. `operation_key` mengikuti I16, null bila tidak berlaku; bukan jaminan retry hanya karena ada di snapshot.
-- `budget.increase`: scope/target mengikat level budget yang diminta, `current_limits` adalah konfigurasi tersimpan pada target saat request dan `proposed_limits` adalah override yang persis disetujui. `budget_override` pada grant, bila disertakan, wajib sama dengan `proposed_limits`; bila tidak disertakan, aksi tetap memakai proposed_limits yang terikat. Perubahan pilihan human membuat request/hash baru. Ini **tidak** menetapkan ledger, lease recovery, finite defaults, atau formula inheritance baru (W05 masih terbuka).
+- `budget.increase`: scope/target mengikat level budget yang diminta, `current_limits` adalah konfigurasi tersimpan pada target saat request dan `proposed_limits` adalah override yang persis disetujui. `budget_override` pada grant, bila disertakan, wajib sama dengan `proposed_limits`; bila tidak disertakan, aksi tetap memakai proposed_limits yang terikat. Perubahan pilihan human membuat request/hash baru. Ledger, lease recovery, finite defaults, dan formula inheritance dijelaskan di [DEC-003] W05 (Budget Ledger, Lease Recovery, Finite Defaults & Inheritance Rules).
 
 `policy_hash` mengikat versi konfigurasi policy/permission yang berlaku untuk aksi, bukan output teks Jev; perubahan konfigurasi terikat memerlukan evaluasi dan approval ulang. `contract_hash` adalah pin aktif atau null eksplisit bila tidak ada kontrak. Scope/task identity dan policy tetap dicek menurut aturan akses existing; snapshot bukan kredensial dan tidak menyelesaikan desain autentikasi event.
 
@@ -3302,6 +3302,147 @@ Label Reviewer `PASS` / `PASS_WITH_WARNINGS` → verdict `approve` (warnings ber
 - [ ] Aturan pemetaan adapter `BLOCKED` terimplementasi di kode Go Adapter & Orchestrator State Machine.
 - [ ] Pembaruan teks spesifikasi pada `Doc 06 §29` dan `Doc 10 72A.4` selesai disunting.
 - [ ] Unit test menggunakan Fixture 1 & Fixture 2 lulus 100%.
+
+---
+
+# 72A.17 [DEC-003] W05 — Budget Ledger, Lease Recovery, Finite Defaults & Inheritance
+
+## Context & Problem Statement
+
+- **Ticket ID**: [DEC-003] W05
+- **References**: Doc 02 §5A.2–5A.3, Doc 10 72A.1 (I3, I4), Doc 10 72A.5, Doc 10 72A.8, Doc 10 72A.10
+- **Problem**: Peristiwa `budget.increase` saat ini hanya menaikkan limit abstrak, namun belum ada skema ledger transaksi untuk pencatatan reserve/settle, mekanisme pemulihan lease yang kedaluwarsa saat crash, batas default bernilai pasti (finite defaults) per scope, dan formulasi pewarisan budget anak dari induk (Invariant I3).
+- **Required Deliverables**:
+  1. Skema SQLite untuk `budget_ledger` & `budget_reservation_lease`.
+  2. Prosedur Reserve/Settle Flow & Startup Lease Recovery Sweeper.
+  3. Tabel Finite Defaults per Scope (Workspace, Run, Task, Agent).
+  4. Aturan Formulasi Pewarisan Budget (Invariant I3).
+
+## Database Schema (SQLite Operational Store)
+
+### 1. Tabel Ledger Transaksi Budget (Double-Entry Log)
+
+```sql
+CREATE TABLE IF NOT EXISTS budget_ledger (
+    ledger_id TEXT PRIMARY KEY,               -- ULID (led_01J...)
+    workspace_id TEXT NOT NULL,
+    run_id TEXT NOT NULL,
+    task_id TEXT,                             -- Nullable jika scope workspace/run
+    agent_id TEXT,                            -- Nullable jika scope task
+    scope TEXT NOT NULL CHECK (scope IN ('workspace', 'run', 'task', 'agent')),
+    entry_type TEXT NOT NULL CHECK (
+        entry_type IN ('grant', 'reserve', 'settle', 'refund', 'increase')
+    ),
+    reservation_id TEXT,                      -- Link ke lease jika entry_type IN ('reserve', 'settle', 'refund')
+    amount_tokens INTEGER NOT NULL,            -- Positif untuk grant/increase/refund/settle, Negatif untuk reserve
+    amount_cost_usd REAL NOT NULL,             -- Positif/Negatif sesuai entry_type
+    balance_tokens INTEGER NOT NULL,          -- Saldo akumulasi tersisa di scope ini
+    balance_cost_usd REAL NOT NULL,           -- Saldo biaya tersisa di scope ini
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_budget_ledger_scope ON budget_ledger(scope, workspace_id, run_id, task_id);
+CREATE INDEX IF NOT EXISTS idx_budget_ledger_reservation ON budget_ledger(reservation_id);
+```
+
+### 2. Tabel Reservation Lease (TTL Tracking untuk Model/Tool Call)
+
+```sql
+CREATE TABLE IF NOT EXISTS budget_reservation_lease (
+    reservation_id TEXT PRIMARY KEY,          -- ULID (res_01J...)
+    workspace_id TEXT NOT NULL,
+    run_id TEXT NOT NULL,
+    task_id TEXT NOT NULL,
+    agent_id TEXT NOT NULL,
+    reserved_tokens INTEGER NOT NULL,
+    reserved_cost_usd REAL NOT NULL,
+    lease_status TEXT NOT NULL CHECK (lease_status IN ('active', 'settled', 'expired')),
+    lease_ttl_seconds INTEGER NOT NULL DEFAULT 300, -- Default TTL 5 menit (300s)
+    expires_at DATETIME NOT NULL,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_lease_recovery ON budget_reservation_lease(lease_status, expires_at);
+```
+
+## Reserve, Settle & Lease Recovery Protocol (Invariant I4)
+
+### A. Reserve Flow (`ReserveBudget`)
+
+Sebelum meluncurkan Model Call / Tool Call, Token Guard mengecek sisa saldo `balance_cost_usd` & `balance_tokens` pada scope Task & Parent:
+1. Buat record `budget_reservation_lease` dengan `lease_status = 'active'`, `expires_at = CURRENT_TIMESTAMP + lease_ttl_seconds`.
+2. Tulis transaksi `budget_ledger` dengan `entry_type = 'reserve'`, memotong saldo `balance_cost_usd` sebesar batas atas estimasi (`max_cost_usd`).
+
+### B. Settle Flow (`SettleBudget`)
+
+Setelah Model Call / Tool Call selesai, tangkap usage aktual (`input_tokens`, `output_tokens`, `estimated_cost_usd`):
+1. Transaksi SQLite tunggal:
+   - Ubah `lease_status = 'settled'` pada `budget_reservation_lease`.
+   - Hitung refund/sisa reservasi: `refund_amount = reserved_cost_usd - actual_cost_usd`.
+   - Tulis `budget_ledger` dengan `entry_type = 'settle'` untuk mencatatkan pemakaian nyata, dan `entry_type = 'refund'` jika `refund_amount > 0` untuk mengembalikan kelebihan reservasi ke saldo ledger.
+
+### C. Startup & Background Lease Recovery Sweeper
+
+Saat daemon booting atau secara periodik (cron 1 menit):
+
+```sql
+-- Cari lease gantung yang mati sebelum sempat di-settle (sistem crash)
+SELECT * FROM budget_reservation_lease
+WHERE lease_status = 'active' AND expires_at <= CURRENT_TIMESTAMP;
+```
+
+Untuk setiap lease kedaluwarsa:
+1. Tandai `lease_status = 'expired'`.
+2. Kembalikan `reserved_tokens` dan `reserved_cost_usd` secara idempoten ke `budget_ledger` (`entry_type = 'refund'`).
+3. Log event `budget.settled` dengan status pemulihan otomatis (orphan reservation recovered).
+
+## Finite Defaults Matrix per Scope
+
+Setiap field budget yang bernilai `null` / tidak diisi pada permintaan secara otomatis menggunakan nilai dasar (fallback defaults) berikut untuk menjamin batas absolut:
+
+| Scope Level | Default Max Tokens | Default Max Cost (USD) | Model/Tool Limits | Default Lease TTL |
+|------------|-------------------|----------------------|-------------------|-------------------|
+| Workspace | 5,000,000 tokens | $50.00 | Max Parallel Agents: 8 | N/A |
+| Run | 500,000 tokens | $5.00 | Max Rebuttals: 2 | N/A |
+| Task | 50,000 tokens | $0.50 | Max Model Calls: 20<br>Max Tool Calls: 30<br>Max Child Tasks: 5 | 300 detik (5 menit) |
+| Agent | 20,000 tokens | $0.20 | Max Iterations: 8 | 120 detik (2 menit) |
+
+**Catatan**: Jika request mencoba menetapkan budget `null` tanpa konfigurasi parent, fallback bernilai pasti ini wajib diterapkan oleh Budget Manager.
+
+## Hierarchical Formula Inheritance Rules (Invariant I3)
+
+Setiap pembuatan subtask (`task.delegate_requested`), Orchestrator wajib memvalidasi alokasi budget anak (`Child_Granted`) terhadap sisa budget induk (`Parent_Remaining`):
+
+### Formulasi Matematis
+
+```
+Parent_Remaining_Cost = Parent_Granted_Cost - Parent_Used_Cost - Parent_Reserved_Cost - Σ(k ∈ ActiveChildren) Child_Granted_Cost_k
+Child_Granted_Cost ≤ Parent_Remaining_Cost
+Child_Granted_Tokens ≤ Parent_Remaining_Tokens
+```
+
+### Aturan Eksekusi Orchestrator
+
+**Kondisi Valid**: Jika `Child_Granted_Cost <= Parent_Remaining_Cost`, pembuatan subtask disetujui, dan saldo `Parent_Remaining_Cost` dikurangi sebesar `Child_Granted_Cost`.
+
+**Kondisi Exceeded**: Jika `Child_Granted_Cost > Parent_Remaining_Cost`:
+- **Rejection Mode (Default)**: Tolak delegasi dengan event `task.delegate_rejected` (Error: `BUDGET_EXCEEDED`, `details.scope = "parent_task"`).
+- **Auto-Clamp Mode (Konfigurasi)**: Pangkas otomatis `Child_Granted_Cost = Parent_Remaining_Cost` jika nilai sisa masih di atas batas minimal task.
+
+## Event Handling `budget.increase`
+
+Saat human memberikan persetujuan penambahan budget (`approval.granted` dengan `budget_override`):
+1. Tulis entri baru di `budget_ledger` dengan `entry_type = 'increase'` dan `amount_cost_usd = proposed_limits.max_cost_usd - current_limits.max_cost_usd`.
+2. Update saldo akumulasi `balance_cost_usd` pada Run/Task terkait.
+3. Terbitkan event `budget.settled` untuk memperbarui persentase pemakaian di UI Dashboard.
+
+## Definition of Done (DoD)
+
+- [ ] Tabel `budget_ledger` dan `budget_reservation_lease` terbuat di SQLite.
+- [ ] Implementasi fungsi `ReserveBudget()`, `SettleBudget()`, dan Sweeper `RecoverExpiredLeases()`.
+- [ ] Aturan Invariant I3 (anak <= sisa induk) teruji lewat unit test delegasi task.
+- [ ] Fallback finite defaults terpasang saat `budget_request` tidak diisi.
 
 ---
 
