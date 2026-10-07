@@ -467,7 +467,7 @@ paused             dijeda oleh pengguna; context terakhir dipertahankan untuk re
 interrupted        task berstatus running atau pausing saat boot; menunggu evaluasi Orchestrator
 blocked            menunggu child task atau dependency saat berjalan
 awaiting_approval  menunggu keputusan human
-completed          selesai (terminal)
+completed          task execution selesai di level lokal (terminal). Merge ke main memerlukan merge_receipt (lihat [DEC-008] W02)
 failed             gagal permanen (terminal)
 cancelled          dibatalkan (terminal)
 ```
@@ -511,9 +511,9 @@ Transisi yang diizinkan (selain ini ditolak):
 
 Resumption context: saat `paused -> running`, task **tidak dibuat ulang** — `id` tetap sama, budget tracking melanjutkan `budget.used` sebelumnya, dan Context Manager mengambil progress terakhir dari artefak tersimpan di Operational Store (SQLite, #37.1).
 
-**Cooperative pause (`pausing`):** pause tidak memotong LLM/tool call yang sedang in-flight — call dibiarkan settle dulu (usage-nya tetap dicatat), baru status menjadi `paused`. Ini menjaga konsistensi `budget.reserved`/`budget.settled` (I4). Permintaan pause dan penyelesaian pause adalah dua fase berbeda pada `task.paused` (`phase: requested` dari `human:user`, `phase: completed` dari `system:orchestrator`). Permintaan tidak langsung mengubah state; Orchestrator memvalidasinya, menyimpan deadline absolut `pause_deadline` di Task/SQLite dan masuk `pausing`. Tanpa call in-flight, penyelesaian langsung menghasilkan `paused`. Event `phase: completed` baru terbit setelah settle. `task.resumed` tidak berasal langsung dari human: backend memvalidasi command resume lalu Orchestrator menerbitkan event.
+**Cooperative pause (`pausing`):** pause tidak memotong LLM/tool call yang sedang in-flight — call dibiarkan settle dulu (usage-nya tetap dicatat), baru status menjadi `paused`. Ini menjaga konsistensi `budget.reserved`/`budget.settled` (I4). Permintaan pause dan penyelesaian pause adalah dua fase berbeda pada `task.paused` (`phase: requested` dari `human:user`, `phase: completed` dari `system:orchestrator`). Permintaan tidak langsung mengubah state; Orchestrator memvalidasinya, menyimpan deadline absolut `pause_deadline` di Task/SQLite dan masuk `pausing`. Tanpa call in-flight, penyelesaian langsung menghasilkan `paused`. Event `phase: completed` baru terbit setelah settle. `task.resumed` tidak berasal langsung dari human: backend memvalidasi command resume lalu Orchestrator menerbitkan event. Semantik pause TTL/in-flight recovery dijelaskan di [DEC-008] W02.
 
-**Startup recovery (`interrupted`):** saat boot, semua task berstatus `running` **dan `pausing`** di SQLite diubah menjadi `interrupted`, dan perubahan direkam sebagai event `task.interrupted` dengan `previous_status`. Task yang sudah terminal tidak diubah. Deadline pause tetap dipertahankan. Call tool yang sedang in-flight saat crash dianggap `outcome_unknown` (I16); jalur resume/retry wajib melewati pemeriksaan keamanan retry dan accounting I4. Orchestrator mengevaluasi tiap task — resume, retry ke `ready`, atau `failed` — memakai CAS pada status stored agar tidak bentrok dengan writer lain. Resume tidak mengulang mutasi yang belum diketahui hasilnya.
+**Startup recovery (`interrupted`):** saat boot, semua task berstatus `running` **dan `pausing`** di SQLite diubah menjadi `interrupted`, dan perubahan direkam sebagai event `task.interrupted` dengan `previous_status`. Task yang sudah terminal tidak diubah. Deadline pause tetap dipertahankan. Call tool yang sedang in-flight saat crash dianggap `outcome_unknown` (I16); jalur resume/retry wajib melewati pemeriksaan keamanan retry dan accounting I4. Orchestrator mengevaluasi tiap task — resume, retry ke `ready`, atau `failed` — memakai CAS pada status stored agar tidak bentrok dengan writer lain. Resume tidak mengulang mutasi yang belum diketahui hasilnya. Semantik pause TTL/in-flight recovery dijelaskan di [DEC-008] W02.
 
 **Network failure auto-pause (I21):** ketika Go Runtime mendeteksi jaringan terputus melalui healthcheck deterministik (socket ping/HEAD request ke DNS publik), semua task aktif diubah menjadi `paused` via CAS pada SQLite dengan `phase: requested` dan `pause_deadline` disimpan. Worker pool dilepas untuk menghemat resource. Background daemon Go memantau pemulihan koneksi; begitu online kembali, Orchestrator menerbitkan `task.resumed` dan melanjutkan task dari checkpoint tersimpan tanpa duplikasi event. Tidak ada fallback router offline atau LLM yang dipanggil untuk diagnosa koneksi.
 
@@ -521,7 +521,9 @@ Resumption context: saat `paused -> running`, task **tidak dibuat ulang** — `i
 
 **Invalidasi kontrak (#17.1):** pada perubahan spec yang dipin, Orchestrator menerbitkan `task.contract_changed` untuk task nonterminal dengan `old_hash` = pin tersimpan dan `new_hash` = hash spec sekarang. Task menjadi `contract_status: stale`; tidak menambah status eksekusi baru. Call in-flight boleh settle, tetapi hasilnya tidak boleh dianggap output kontrak baru. Dispatch/resume, review, approval, dan `task.completed` ditolak selama stale. Gate/review/approval dengan hash lama tidak lagi valid. Runtime re-pin ke spec terbaru dan menjalankan codegen sebelum `contract_status` kembali `current`; review/approval yang diperlukan dijalankan ulang. Event `phase: repinned` merekam pin baru agar replay tidak bergantung pada nilai RAM. Jika spec berubah lagi selama codegen, tetap stale dan ulangi terhadap hash terbaru. Task terminal tidak dibuka kembali; pekerjaan lanjutan memakai task baru.
 
-**Invalidasi approval:** `approval.invalidated` menutup request/grant lama di record approval SQLite tanpa menghapus event historis. ID approval tidak boleh di-rebind. Task yang diparkir dapat kembali `ready` untuk membangun input/evidence baru; event ini bukan grant dan tidak mengizinkan mutasi. Grant terlambat pada ID yang invalidated ditolak. Task terminal tidak dibuka kembali; perubahan sesudah aksi yang sudah terkonfirmasi bukan invalidasi retroaktif/rollback.
+**Invalidasi approval:** `approval.invalidated` menutup request/grant lama di record approval SQLite tanpa menghapus event historis. ID approval tidak boleh di-rebind. Task yang diparkir dapat kembali `ready` untuk membangun input/evidence baru; event ini bukan grant dan tidak mengizinkan mutasi. Grant terlambat pada ID yang invalidated ditolak. Task terminal tidak dibuka kembali; perubahan sesudah aksi yang sudah terkonfirmasi bukan invalidasi retroaktif/rollback. Semantik pause TTL/in-flight recovery dijelaskan di [DEC-008] W02.
+
+**Catatan tambahan untuk status `completed`**: Status `completed` menandakan task execution selesai di level lokal (agent telah memenuhi DoD dan menulis artefak di worktree). Integrasi ke branch main memerlukan `merge_receipt` yang di-generate oleh Serial Merge Queue setelah rebase/CI/pass. Tanpa `merge_receipt`, task `completed` belum terintegrasi ke kode utama. Lihat [DEC-008] W02 untuk detail lengkap.
 
 ## 72A.7 Event Registry
 
@@ -755,7 +757,7 @@ Agent hanya **meminta**. `budget_request` adalah permintaan, bukan pemberian. Bu
       "in_flight_call_id": { "$ref": "urn:societas:1:common#/$defs/tc_id",
                              "description": "call yang ditunggu settle saat phase=requested (pause kooperatif)" },
       "pause_deadline": { "$ref": "urn:societas:1:common#/$defs/ts",
-                          "description": "TTL paused, dipersist di SQLite — bukan timer RAM (W02)" }
+                          "description": "TTL paused, dipersist di SQLite — bukan timer RAM. Semantik pause TTL/in-flight recovery dijelaskan di [DEC-008] W02" }
     }
   },
   {
@@ -767,7 +769,7 @@ Agent hanya **meminta**. `budget_request` adalah permintaan, bukan pemberian. Bu
                         "description": "human:user (klik resume) atau system:orchestrator (recovery)" },
       "reason": { "type": "string", "maxLength": 500 },
       "from_status": { "enum": ["pausing", "paused", "interrupted"],
-                       "description": "state sebelum resume — dipakai rekonsiliasi call in-flight (W02)" }
+                       "description": "state sebelum resume — dipakai rekonsiliasi call in-flight. Semantik pause TTL/in-flight recovery dijelaskan di [DEC-008] W02" }
     }
   },
   {
@@ -3778,6 +3780,101 @@ Setiap event wire type yang melewati Event Bus wajib menambahkan struktur `princ
 - [ ] Struktur `principal` pada Event Envelope `72A.3` terpasang dan diverifikasi oleh Event Bus.
 - [ ] Agent Session Handshake (§89) teruji dengan penolakan event bersignature palsu/invalid.
 - [ ] Integration test skenario race condition parallel consume lulus 100%.
+
+---
+
+# 72A.21 [DEC-008] W02 — Task Pause/Resume Semantics & In-Flight Call Recovery
+
+## Context & Problem Statement
+
+- **Ticket ID**: [DEC-008] W02
+- **References**: Doc 10 72A.6 (W02), Doc 08 §40.1, Doc 10 72A.12
+- **Problem**:
+  1. Arti status terminal `completed` masih campur aduk dengan bukti penggabungan kode (`merge_receipt`).
+  2. Perilaku `pause_deadline` / TTL saat task berstatus `pausing`, `paused`, atau `interrupted` belum final.
+  3. Mekanisme penanganan tool call / model request yang sedang berjalan (*in-flight*) saat task di-resume atau sistem di-restart belum ditentukan.
+- **Required Deliverables**:
+  1. Keputusan resmi dan pembaruan teks spesifikasi Doc 10 72A.6.
+  2. Protokol rekonsiliasi *in-flight call recovery* berbasis `durable_checkpoint` SQLite.
+
+## State Machine Clarification: `completed` vs `merge_receipt`
+
+```text
+  [Task Running] ---> (DoD Met & Local Tests Pass) ---> [Task Status: COMPLETED]
+                                                                |
+                                                                v
+                                                   (Submit to Serial Merge Queue)
+                                                                |
+                                            +-------------------+-------------------+
+                                            |                                       |
+                                  (Merge & CI Success)                     (Merge Conflict)
+                                            |                                       |
+                                            v                                       v
+                                    [MERGE_RECEIPT Issued]            [Task Re-opened: RUNNING]
+                                 (Changes Merged to Main)               (Scheduled for Rebase)
+```
+
+- **`completed`**: Menandakan kinerjitas lokal agen selesai. Task dinyatakan sukses di tingkat individu.
+- **`merge_receipt`**: Entitas transaksi (Invariants I15) yang menandai bahwa commit kandidat telah menyatu dengan branch target. Tanpa `merge_receipt`, task `completed` belum terintegrasi ke kode utama.
+
+## Pause & Resume Lifecycle Specification (72A.6 Update)
+
+### Database Schema: Task Checkpoints
+
+```sql
+-- Skema Checkpoint Task untuk Pause/Resume Recovery
+CREATE TABLE IF NOT EXISTS task_checkpoints (
+    checkpoint_id TEXT PRIMARY KEY,           -- ULID (chk_01J...)
+    task_id TEXT NOT NULL,
+    run_id TEXT NOT NULL,
+    step_number INTEGER NOT NULL,
+    active_tool_call_id TEXT,                 -- ULID in-flight tool call (jika ada)
+    execution_state_json TEXT NOT NULL,       -- State variabel & memory snapshot
+    checkpoint_type TEXT NOT NULL CHECK (checkpoint_type IN ('graceful_pause', 'forced_interrupt', 'step_complete')),
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_task_checkpoints ON task_checkpoints(task_id, step_number DESC);
+```
+
+### A. Algoritma Transisi State `pausing` -> `paused` / `interrupted`
+
+Saat event `task.pause_requested` diterima:
+1. Ubah `task_status = 'pausing'`.
+2. Tetapkan `pause_deadline = CURRENT_TIMESTAMP + 30s`.
+3. Kirim sinyal `context.Cancelled` ke seluruh worker thread.
+
+**Jika seluruh worker yield sebelum `pause_deadline`**:
+- Simpan `task_checkpoints` (`checkpoint_type = 'graceful_pause'`).
+- Ubah `task_status = 'paused'`.
+
+**Jika `pause_deadline` terlampaasi (Timeout)**:
+- Injeksi `SIGKILL` ke process sandbox.
+- Simpan `task_checkpoints` (`checkpoint_type = 'forced_interrupt'`).
+- Ubah `task_status = 'interrupted'`.
+
+## In-Flight Call Recovery Protocol saat Task Resumed / Restart
+
+Saat task berpindah dari `paused` / `interrupted` ke `running` via `task.resumed`:
+
+### Load Latest Checkpoint
+
+Control Plane membaca `task_checkpoints` terbaru untuk `task_id` terkait.
+
+### Reconcile Active Tool Call
+
+Jika `active_tool_call_id` `IS NOT NULL`:
+1. Periksa tabel `tool_execution_logs` di SQLite:
+   - **Kondisi 1 (Observation Recorded)**: Jika hasil eksekusi tool sudah tersimpan, jadikan sebagai cached observation dan lanjutkan ke langkah berikutnya.
+   - **Kondisi 2 (Observation Missing)**: Jika panggilannya gantung (in-flight saat crash), panggil fungsi `CheckToolIdempotency(active_tool_call_id)`.
+     - Jika tool bersifat idempotent/read-only: Ulangi eksekusi tool.
+     - Jika tool bersifat side-effecting (misal: kirim HTTP POST / commit): Ambil status dari external system via idempotency key; jika belum jalan, eksekusi ulang.
+
+## Definition of Done (DoD)
+
+- [ ] Teks spesifikasi `Doc 10 72A.6` diperbarui dengan memisahkan definisi `completed` vs `merge_receipt`.
+- [ ] Handler transisi `pausing` -> `paused` / `interrupted` dengan `pause_deadline` 30 detik terimplementasi.
+- [ ] Skema `task_checkpoints` dan prosedur In-Flight Call Recovery berbasis `active_tool_call_id` teruji 100%.
 
 ---
 
