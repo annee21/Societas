@@ -147,7 +147,7 @@ Catatan:
 }
 ```
 
-Label tampilan bukan nilai wire: `thinking` → tier `strong`; Flash tier adalah label jalur murah yang dipetakan ke tier wire `cheap`, bukan tier baru. Policy/risk routing tetap berlaku, termasuk model escalation untuk task critical. Label Reviewer `PASS`/`PASS_WITH_WARNINGS` → verdict `approve` (warnings hanya advisory), `REQUEST_CHANGES` → `request_changes`; Semantic Rebase memakai `result: pass|conflict|inconclusive`, bukan verdict review. `reject` menolak hasil review tetapi tidak otomatis membuat task terminal. Label legacy `BLOCKED` belum punya mapping default: arti menunggu dependency/policy vs penolakan final harus diputuskan sebelum adapter memprosesnya (#29, keputusan I01).
+Label tampilan bukan nilai wire: `thinking` → tier `strong`; Flash tier adalah label jalur murah yang dipetakan ke tier wire `cheap`, bukan tier baru. Policy/risk routing tetap berlaku, termasuk model escalation untuk task critical. Label Reviewer `PASS`/`PASS_WITH_WARNINGS` → verdict `approve` (warnings hanya advisory), `REQUEST_CHANGES` → `request_changes`; Semantic Rebase memakai `result: pass|conflict|inconclusive`, bukan verdict review. `reject` menolak hasil review tetapi tidak otomatis membuat task terminal. Label legacy `BLOCKED` dipetakan secara deterministik oleh Adapter berdasarkan kategori alasan (Keputusan I01): fatal technical violation → `reject`; external dependency/policy wait → transisi state task `blocked`/`awaiting_approval`.
 
 ## 72A.5 Core Objects
 
@@ -3208,6 +3208,100 @@ bwrap \
 - [ ] Aturan isolasi mount Bubblewrap / Landlock untuk `.git/objects` (RO) dan `.worktrees/TASK-XXX` (RW) terimplementasi.
 - [ ] Integrasi `Policy Engine` untuk mencegat mutasi Git Ref di luar worktree scope selesai.
 - [ ] Pengujian symlink escape & hook execution exploit dipastikan `FAIL-CLOSED` (terblokir 100%).
+
+---
+
+# 72A.16 [DEC-001] I01 — Resolution of Legacy 'BLOCKED' Review Label
+
+## Context & Problem Statement
+
+- **Ticket ID**: [DEC-001] I01
+- **References**: Doc 06 §29, Doc 10 72A.4, Doc 10 72A.6, Doc 10 72A.8
+- **Problem**: Label legacy `BLOCKED` dari prompt/UI Reviewer lama tidak ada di dalam wire schema canonical `review.completed.verdict` (`approve` | `request_changes` | `reject`). Maknanya rancu antara penolakan teknis/keamanan final atau kondisi menunggu dependensi/policy.
+- **Required Deliverables**: Keputusan tertulis, aturan adapter review, pembaruan teks spesifikasi Doc 06 §29 & Doc 10 72A.4, serta test fixtures JSON.
+
+## Decision Matrix & Adapter Mapping Rules
+
+Adapter Reviewer wajib mentransformasi output legacy `BLOCKED` sebelum mempublikasikan event `review.completed` atau menransisikan state task:
+
+| Input Label (Legacy / Prompt) | Reason / Category Context | Canonical Wire Verdict (`review.completed`) | Target Task Status (State Machine 72A.6) | Action / Workflow Flow |
+| :--- | :--- | :--- | :--- | :--- |
+| `PASS` | All checks passed | `approve` | `ready` / proceed | Candidate untuk Serial Merge Queue. |
+| `PASS_WITH_WARNINGS` | Non-blocking advisory findings | `approve` (advisory warnings) | `ready` / proceed | Candidate untuk Serial Merge Queue. |
+| `REQUEST_CHANGES` | Iterative fixable bugs/lints | `request_changes` | `running` / `ready` | Dikembalikan ke Engineer (max 2 rebuttals). |
+| **`BLOCKED` (Fatal Violation)** | Security breach, hard architecture violation | **`reject`** | `running` / `failed` | Penolakan kandidat secara final. |
+| **`BLOCKED` (External/Policy)** | Waiting on dependency, policy gate, human approval | *None* (No review rejection) | **`blocked`** / **`awaiting_approval`** | Orchestrator memarkir task via event `task.blocked` / `approval.requested`. |
+
+## Industry Reference & Best Practice
+
+- **GitHub PR Review API & Agentic Review Systems Standard**:
+  Terdapat pemisahan tegas antara **Code Review Verdict** (`approve` | `request_changes` | `reject`) yang murni menilai kebenaran & keamanan diff kode, dengan **Workflow Execution State** (`blocked` / `awaiting_approval`) yang dikelola oleh Orchestrator Engine.
+- **Dampak Implementasi**: Mencegah insiden di mana task dianggap "gagal review" padahal hanya sedang menunggu PR/task lain selesai dieksekusi.
+
+## Documentation Updates
+
+### A. Pembaruan `Doc 06 §29 (Reviewer Agent)`
+
+Reviewer fokus pada bug, security, performance, dan architecture violation. Wire review `review.completed.verdict` hanya mendukung nilai kanonis: `approve`, `request_changes`, dan `reject`. Label legacy `BLOCKED` dipetakan oleh Adapter Reviewer:
+1. Dipetakan ke `verdict: reject` jika temuan bersifat penolakan teknis/keamanan fatal.
+2. Dipetakan ke transisi status task `blocked` atau `awaiting_approval` (tanpa verdict `reject`) jika disebabkan oleh hambatan dependensi eksternal atau kebijakan policy.
+
+### B. Pembaruan `Doc 10 72A.4 (Common Definitions)`
+
+Label Reviewer `PASS` / `PASS_WITH_WARNINGS` → verdict `approve` (warnings bersifat advisory). `REQUEST_CHANGES` → verdict `request_changes`. Label legacy `BLOCKED` dipetakan secara deterministik oleh Adapter berdasarkan kategori alasan (Keputusan I01): fatal technical violation → `reject`; external dependency/policy wait → transisi state task `blocked`/`awaiting_approval`.
+
+## Adapter Test Fixtures (JSON Test Vectors)
+
+### Fixture 1: Legacy BLOCKED -> Canonical `reject` (Fatal Architecture Violation)
+
+```json
+{
+  "test_case": "adapter_legacy_blocked_fatal_violation",
+  "input_raw_review": {
+    "label": "BLOCKED",
+    "reason_category": "architecture_violation",
+    "message": "Candidate bypasses transport adapter boundary."
+  },
+  "expected_output_event": {
+    "type": "review.completed",
+    "payload": {
+      "verdict": "reject",
+      "findings": [
+        {
+          "severity": "blocker",
+          "text": "Candidate bypasses transport adapter boundary."
+        }
+      ]
+    }
+  }
+}
+```
+
+### Fixture 2: Legacy BLOCKED -> Task State `blocked` (Waiting Dependency)
+
+```json
+{
+  "test_case": "adapter_legacy_blocked_dependency_wait",
+  "input_raw_review": {
+    "label": "BLOCKED",
+    "reason_category": "external_dependency",
+    "waiting_on_task_id": "TASK-002",
+    "message": "Waiting for contract binding from TASK-002."
+  },
+  "expected_output_event": {
+    "type": "task.blocked",
+    "payload": {
+      "waiting_on": ["TASK-002"]
+    }
+  }
+}
+```
+
+## Definition of Done (DoD)
+
+- [ ] Aturan pemetaan adapter `BLOCKED` terimplementasi di kode Go Adapter & Orchestrator State Machine.
+- [ ] Pembaruan teks spesifikasi pada `Doc 06 §29` dan `Doc 10 72A.4` selesai disunting.
+- [ ] Unit test menggunakan Fixture 1 & Fixture 2 lulus 100%.
 
 ---
 

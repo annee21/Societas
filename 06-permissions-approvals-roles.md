@@ -249,7 +249,7 @@ REQUEST_CHANGES
 BLOCKED
 ```
 
-Label tampilan yang ekuivalen dipetakan ke wire `review.completed.verdict` (72A.8): `PASS` → `approve`, `PASS_WITH_WARNINGS` → `approve` dengan temuan advisory nonblocking, `REQUEST_CHANGES` → `request_changes`. `reject` adalah penolakan final hasil review, bukan state task `blocked`. Label legacy `BLOCKED` tidak boleh otomatis diubah menjadi `reject` atau mengubah state task; maknanya masih menunggu keputusan I01 (penolakan final vs menunggu dependency/policy). Adapter wajib menghasilkan verdict kanonik yang eksplisit sebelum hasil review diproses.
+Label tampilan yang ekuivalen dipetakan ke wire `review.completed.verdict` (72A.8): `PASS` → `approve`, `PASS_WITH_WARNINGS` → `approve` dengan temuan advisory nonblocking, `REQUEST_CHANGES` → `request_changes`. `reject` adalah penolakan final hasil review, bukan state task `blocked`. Label legacy `BLOCKED` dipetakan secara deterministik oleh Adapter berdasarkan kategori alasan (Keputusan I01): fatal technical violation → `reject`; external dependency/policy wait → transisi state task `blocked`/`awaiting_approval`. Adapter wajib menghasilkan verdict kanonik yang eksplisit sebelum hasil review diproses.
 
 Reviewer LLM **hanya dipanggil setelah Local Compiler Gate lolos** ([5A.22 — Compiler Gate](02-ai-control-plane.md#compiler-gate-sebelum-reviewer-dipanggil)): backend Go menjalankan build/linter lokal terlebih dahulu dengan biaya 0 token; kegagalan sintaks dikembalikan langsung ke Engineer tanpa memanggil Reviewer.
 
